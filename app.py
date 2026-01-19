@@ -12,11 +12,18 @@ app = Flask(__name__)
 app.json_encoder = PlotlyJSONEncoder
 
 
-# MySQL Connection - Read from environment variables with defaults
-MYSQL_USER = os.getenv('MYSQL_USER', 'root')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'Welcome987')
-MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')
-MYSQL_DB = os.getenv('MYSQL_DB', 'mst')
+# MySQL Connection - Read from environment variables ONLY (no defaults for security)
+MYSQL_USER = os.getenv('MYSQL_USER')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
+MYSQL_HOST = os.getenv('MYSQL_HOST')
+MYSQL_DB = os.getenv('MYSQL_DB') or os.getenv('DB_NAME')
+
+# Validate required environment variables
+if not all([MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST, MYSQL_DB]):
+    raise ValueError(
+        "Missing required environment variables. Please set: "
+        "MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST, MYSQL_DB"
+    )
 
 # Create database if not exists
 engine_no_db = create_engine(f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}')
