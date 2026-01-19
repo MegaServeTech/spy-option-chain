@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPY Options Chain</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <style>
+        body {
+            background: #f8f9fa;
+            padding: 30px 0;
+        }
+
+        .card {
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            border-radius: 12px;
+        }
+
+        .table-container {
+            max-height: 75vh;
+            overflow: auto;
+        }
+
+        .table th {
+            position: sticky;
+            top: 0;
+            background: #343a40;
+            color: white;
+            z-index: 2;
+            text-align: center;
+        }
+
+        .table td {
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        .badge {
+            font-size: 0.9em;
+        }
+
+        /* Beautiful Time Slider Styling */
+        .custom-slider {
+            height: 12px;
+            border-radius: 10px;
+            background: #e0e0e0;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .custom-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: #00ffff;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.7);
+            border: 3px solid #000;
+        }
+
+        .custom-slider::-moz-range-thumb {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: #00ffff;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.7);
+            border: 3px solid #000;
+        }
+
+        /* CLEAN WHITE THEME FOR DATE INPUT */
+        #dateInput {
+            font-size: 1.1em;
+            font-weight: bold;
+            color: #212529;
+            background: white;
+            border: 2px solid #ced4da;
+            border-radius: 12px;
+            padding: 12px 16px;
+            text-align: center;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            transition: all 0.2s ease;
+        }
+
+        #dateInput:hover {
+            border-color: #adb5bd;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+        }
+
+        #dateInput:focus {
+            outline: none;
+            border-color: #80bdff;
+            box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+        }
+
+        /* FLATPICKR STYLING */
+        .flatpickr-calendar {
+            background: white;
+            border: 1px solid #ddd;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+        }
+
+        .flatpickr-month,
+        .flatpickr-current-month,
+        .flatpickr-monthDropdown-months,
+        .flatpickr-weekday,
+        .flatpickr-day {
+            color: #212529;
+            font-weight: 500;
+        }
+
+        .flatpickr-day.selected,
+        .flatpickr-day.today {
+            background: #007bff !important;
+            color: white !important;
+        }
+
+        .flatpickr-day:hover {
+            background: #e9ecef;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1 class="text-center mb-5 text-primary fw-bold">SPY Options Chain</h1>
+
+        <div class="card p-4 mb-4">
+            <div class="row g-3 align-items-end">
+                <!-- Popup Date Picker -->
+                <div class="col-md-4">
+                    <label class="form-label fw-bold">Select Trading Date</label>
+                    <input type="text" id="dateInput" class="form-control form-control-lg"
+                        placeholder="Click to select date" readonly>
+
+                    {% if not dates %}
+                    <div class="alert alert-warning mt-3 small">
+                        <strong>No dates found!</strong> Please upload index CSV files first.
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Expiry -->
+                <div class="col-md-2">
+                    <label class="form-label fw-bold">Expiry</label>
+                    <select class="form-select form-select-lg" onchange="updateParam('expiry', this.value)">
+                        <option value="0DTE" {% if selected_expiry=='0DTE' %}selected{% endif %}>0DTE</option>
+                        <option value="1DTE" {% if selected_expiry=='1DTE' %}selected{% endif %}>1DTE</option>
+                        <option value="2DTE" {% if selected_expiry=='2DTE' %}selected{% endif %}>2DTE</option>
+                    </select>
+                </div>
+
+                <!-- Strike Steps -->
+                <div class="col-md-2">
+                    <label class="form-label fw-bold">Strikes ±</label>
+                    <input type="number" class="form-control form-control-lg" value="{{ strike_steps }}" min="5"
+                        max="50" step="5" onchange="updateParam('steps', this.value)">
+                </div>
+
+                <!-- Reset Button -->
+                <div class="col-md-2">
+                    <label class="form-label opacity-0">Reset</label>
+                    <button class="btn btn-outline-danger form-control-lg w-100" onclick="window.location.search = ''">
+                        Reset
+                    </button>
+                </div>
+            </div>
+
+            <!-- Select Time Slider -->
+            <div class="row mt-4">
+                <div class="col-12">
+                    <label class="form-label fw-bold">Select Time</label>
+                    <div class="d-flex align-items-center gap-4 px-3">
+                        <span id="currentTimeDisplay" class="fw-bold text-primary"
+                            style="font-size: 2em; min-width: 120px;">
+                            {{ selected_time[11:16] if selected_time else '--:--' }}
+                        </span>
+
+                        {% if filtered_times %}
+                        <input type="range" class="custom-slider flex-grow-1" id="timeSlider" min="0"
+                            max="{{ filtered_times|length - 1 }}" step="1" value="{{ slider_value }}">
+                        {% else %}
+                        <input type="range" class="custom-slider" disabled>
+                        {% endif %}
+
+                        <button class="btn btn-outline-info btn-lg px-4 fw-bold" onclick="selectLatestTime()">
+                            Latest
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Selected Info Bar -->
+            <div class="mt-4 alert alert-info py-3">
+                <strong>Selected:</strong>
+                <span class="fw-bold">{{ selected_date|replace('-', '‑') if selected_date else '—' }}</span>
+                @
+                <span class="fw-bold">{{ selected_time[11:16] if selected_time else '—' }}</span>
+                |
+                Expiry:
+                <strong>{{ selected_expiry_display or '—' }}</strong>
+                <span class="badge bg-secondary ms-2">{{ selected_expiry }}</span>
+                |
+                ATM:
+                <strong>{{ atm_strike or '—' }}</strong>
+                {% if open_price is defined and open_price is not none %}
+                <small class="text-muted ms-2">(from open price {{ "%.2f"|format(open_price) }})</small>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Option Chain Table -->
+        <div class="card p-4 table-container mb-4">
+            {{ chain | safe }}
+        </div>
+
+        <!-- Intraday Price Chart -->
+        {% if price_chart %}
+        <div class="card p-4 mb-5 bg-dark text-light border-0" style="border-radius: 12px;">
+            <h3 class="text-center mb-4" style="color: #00ffff;">Intraday SPY Price Movement</h3>
+            <div id="price-chart" style="width: 100%; height: 600px;"></div>
+            <script>
+                var priceChartData = {{ price_chart | safe }};
+                Plotly.newPlot('price-chart', priceChartData.data, priceChartData.layout, { responsive: true });
+            </script>
+        </div>
+        {% else %}
+        <div class="card p-4 mb-5 text-center">
+            <p class="lead text-muted">
+                <em>No price data available between <strong>13:30</strong> and <strong>20:15</strong> on this date.</em>
+            </p>
+            <small class="text-muted">Your uploaded data may be in Eastern Time or only contain pre/post-market
+                hours.</small>
+        </div>
+        {% endif %}
+
+        <!-- ATM Straddle Chart (Toggle REMOVED) -->
+        {% if atm_straddle_chart %}
+        <div class="card p-4 mb-5 bg-dark text-light border-0" style="border-radius: 12px;">
+            <h3 class="text-center mb-4" style="color: #00ffff; font-weight: bold;">ATM Straddle Mid Price</h3>
+
+            <div id="atm-straddle-chart" style="width: 100%; height: 650px;"></div>
+            <script>
+                var fullChartData = {{ atm_straddle_chart | safe }};
+                Plotly.newPlot('atm-straddle-chart', fullChartData.data, fullChartData.layout, { responsive: true });
+            </script>
+        </div>
+        {% endif %}
+
+        <!-- Dynamic ATM Straddle Comparison Chart -->
+        {% if straddle_comparison_chart %}
+        <div class="card p-4 mb-5"
+            style="background: linear-gradient(135deg, #1a2a6c, #b21f1f, #fdbb2d); border-radius: 16px; color: white;">
+            <div class="text-center mb-4">
+                <h3 class="fw-bold mb-3" style="text-shadow: 0 2px 8px rgba(0,0,0,0.5);">
+                    ATM Straddle Comparison
+                </h3>
+                <div class="d-inline-block bg-white rounded-pill px-4 py-2 shadow">
+                    <label class="form-label fw-bold text-dark me-3 mb-0">Compare:</label>
+                    <select class="form-select form-select-lg d-inline-block w-auto" style="min-width: 220px;"
+                        onchange="updateParam('compare', this.value)">
+                        <option value="all" {% if selected_comparison=='all' %}selected{% endif %}>
+                            All (0DTE • 1DTE • 2DTE)
+                        </option>
+                        <option value="0v1" {% if selected_comparison=='0v1' %}selected{% endif %}>
+                            0DTE vs 1DTE
+                        </option>
+                        <option value="0v2" {% if selected_comparison=='0v2' %}selected{% endif %}>
+                            0DTE vs 2DTE
+                        </option>
+                        <option value="1v2" {% if selected_comparison=='1v2' %}selected{% endif %}>
+                            1DTE vs 2DTE
+                        </option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="straddle-comparison-chart" style="width: 100%; height: 680px;"></div>
+
+            <script>
+                var comparisonData = {{ straddle_comparison_chart | safe }};
+                Plotly.newPlot('straddle-comparison-chart', comparisonData.data, comparisonData.layout, {
+                    responsive: true,
+                    displayModeBar: true,
+                    displaylogo: false
+                });
+            </script>
+        </div>
+        {% endif %}
+
+        <div class="text-center mt-5 mb-5">
+            <a href="/" class="btn btn-outline-cyan btn-lg px-5 py-3 fw-bold"
+                style="font-size: 1.2em; border-color: #00ffff; color: #00ffff;">
+                ← Back to Upload Data
+            </a>
+        </div>
+    </div>
+
+    <footer class="text-center py-4 mt-auto">
+        <p id="sg" class="mb-0 text-muted">Developed by Saksham Gupta</p>
+    </footer>
+
+    <script>
+        function updateParam(key, value) {
+            const params = new URLSearchParams(window.location.search);
+            if (value && value !== '') {
+                params.set(key, value);
+            } else {
+                params.delete(key);
+            }
+            window.location.search = params.toString();
+        }
+
+        function updateDate(value) {
+            const params = new URLSearchParams(window.location.search);
+            if (value) {
+                params.set('date', value);
+                params.delete('time');
+            } else {
+                params.delete('date');
+                params.delete('time');
+            }
+            window.location.search = params.toString();
+        }
+
+        const filteredTimes = [
+            {% if filtered_times %}
+        {% for t in filtered_times %}
+        "{{ t }}"{% if not loop.last %}, {% endif %}
+        {% endfor %}
+        {% endif %}
+        ];
+
+        const slider = document.getElementById('timeSlider');
+        const timeDisplay = document.getElementById('currentTimeDisplay');
+
+        if (slider && filteredTimes.length > 0) {
+            slider.addEventListener('input', function () {
+                const idx = this.value;
+                const timeStr = filteredTimes[idx] ? filteredTimes[idx].substring(11, 16) : '--:--';
+                timeDisplay.textContent = timeStr;
+            });
+
+            slider.addEventListener('change', function () {
+                const idx = this.value;
+                const selected = filteredTimes[idx];
+                if (selected) updateParam('time', selected);
+            });
+        }
+
+        function selectLatestTime() {
+            if (filteredTimes.length > 0) {
+                updateParam('time', filteredTimes[filteredTimes.length - 1]);
+            }
+        }
+
+        window.addEventListener('load', function () {
+            if (slider && filteredTimes.length > 0) {
+                const currentTime = "{{ selected_time }}";
+                if (currentTime && filteredTimes.includes(currentTime)) {
+                    const idx = filteredTimes.indexOf(currentTime);
+                    slider.value = idx;
+                    timeDisplay.textContent = currentTime.substring(11, 16);
+                } else if (filteredTimes.length > 0) {
+                    slider.value = filteredTimes.length - 1;
+                    timeDisplay.textContent = filteredTimes[filteredTimes.length - 1].substring(11, 16);
+                }
+            }
+        });
+
+        // Date Picker Initialization
+        document.addEventListener("DOMContentLoaded", function () {
+            const availableDates = [
+                {% if dates %}
+                {% for d in dates %}
+        "{{ d }}"{% if not loop.last %}, {% endif %}
+        {% endfor %}
+        {% endif %}
+            ];
+
+        const initialDate = "{{ selected_date }}" || (availableDates.length > 0 ? availableDates[0] : null);
+
+        flatpickr("#dateInput", {
+            dateFormat: "Y-m-d",
+            defaultDate: initialDate,
+            enable: availableDates,
+            locale: { firstDayOfWeek: 1 },
+            onChange: function (selectedDates, dateStr) {
+                if (dateStr) {
+                    updateDate(dateStr);
+                }
+            }
+        });
+
+        if (initialDate) {
+            const date = new Date(initialDate);
+            const options = { month: 'long', day: 'numeric', year: 'numeric' };
+            document.getElementById('dateInput').value = date.toLocaleDateString('en-US', options);
+        }
+        });
+    </script>
+</body>
+
+</html>
