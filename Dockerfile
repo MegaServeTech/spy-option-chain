@@ -25,12 +25,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Expose Flask port (Cloud Run uses PORT env var, defaults to 8080)
+# Expose port 8080 for Cloud Run
 EXPOSE 8080
-
-# Health check (Cloud Run manages this, but kept for local testing)
-HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8080/', timeout=2)" || exit 1
 
 # Run the application with gunicorn on PORT from environment (Cloud Run sets this to 8080)
 CMD exec gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 4 --timeout 120 app:app

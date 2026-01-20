@@ -12,26 +12,20 @@ app = Flask(__name__)
 app.json_encoder = PlotlyJSONEncoder
 
 
-# MySQL Connection - Read from environment variables ONLY (no defaults for security)
-MYSQL_USER = os.getenv('MYSQL_USER')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
-MYSQL_HOST = os.getenv('MYSQL_HOST')
-MYSQL_DB = os.getenv('MYSQL_DB') or os.getenv('DB_NAME')
-
-# Validate required environment variables
-if not all([MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST, MYSQL_DB]):
-    raise ValueError(
-        "Missing required environment variables. Please set: "
-        "MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST, MYSQL_DB"
-    )
+# MySQL Connection - Direct configuration (no environment variables)
+MYSQL_USER = 'msdb'
+MYSQL_PASSWORD = 'dbMega$3322'  
+MYSQL_HOST = '127.0.0.1'
+MYSQL_PORT = '3307'
+MYSQL_DB = 'spydata'
 
 # Create database if not exists
-engine_no_db = create_engine(f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}')
+engine_no_db = create_engine(f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}')
 with engine_no_db.connect() as conn:
     conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}"))
     conn.commit()
 
-engine = create_engine(f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DB}')
+engine = create_engine(f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}')
 inspector = inspect(engine)
 
 # ───────────────────────────────────────────────────────────────

@@ -22,3 +22,6 @@ venv/
 *.swo
 *~
 .gemini
+.env
+.env.*
+!.env.example
