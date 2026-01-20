@@ -7,60 +7,27 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.utils import PlotlyJSONEncoder
 import json
+from configure import APP_CONFIG
 
 app = Flask(__name__)
 app.json_encoder = PlotlyJSONEncoder
+app.secret_key = APP_CONFIG['SECRET_KEY']
 
-
-# MySQL Connection - Supports both local and Cloud SQL
-# For Cloud SQL (Production): Uses Unix socket connection
-# For Local Development: Uses TCP connection (127.0.0.1:3307)
-
-MYSQL_USER = os.getenv('MYSQL_USER', 'msdb')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'dbMega$3322')
-MYSQL_DB = os.getenv('MYSQL_DB', 'spydata')
-
-# Cloud SQL Configuration
-INSTANCE_CONNECTION_NAME = os.getenv('INSTANCE_CONNECTION_NAME')  # Format: project:region:instance
-
-# Build connection string based on environment
-if INSTANCE_CONNECTION_NAME:
-    # Production: Cloud SQL via Unix socket
-    db_connection_string = (
-        f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@/'
-        f'{MYSQL_DB}?unix_socket=/cloudsql/{INSTANCE_CONNECTION_NAME}'
-    )
-    print(f"🌐 Using Cloud SQL connection: {INSTANCE_CONNECTION_NAME}")
-else:
-    # Local: TCP connection
-    MYSQL_HOST = os.getenv('MYSQL_HOST', '127.0.0.1')
-    MYSQL_PORT = os.getenv('MYSQL_PORT', '3307')
-    db_connection_string = f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}'
-    print(f"💻 Using local connection: {MYSQL_HOST}:{MYSQL_PORT}")
-
-# Create database engine
+# Database Connection
 try:
-    engine = create_engine(
-        db_connection_string,
-        pool_size=5,
-        max_overflow=2,
-        pool_timeout=30,
-        pool_recycle=1800,
-        pool_pre_ping=True
-    )
+    engine = create_engine(APP_CONFIG['DATABASE_URL'], pool_pre_ping=True)
     inspector = inspect(engine)
     
     # Test connection
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
-    print(f"✅ Database connected successfully to {MYSQL_DB}")
+    print(f"✅ Database connected successfully!")
 except Exception as e:
-    print(f"❌ Database connection failed: {e}")
-    if INSTANCE_CONNECTION_NAME:
-        print(f"   Cloud SQL Instance: {INSTANCE_CONNECTION_NAME}")
-    else:
-        print(f"   Connection: mysql+pymysql://{MYSQL_USER}:***@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}")
-    raise
+    print(f"⚠️ Database connection error: {e}")
+    # Create engine anyway for app to start (will fail on first query)
+    engine = create_engine(APP_CONFIG['DATABASE_URL'], pool_pre_ping=True)
+    inspector = inspect(engine)
+
 
 
 # ───────────────────────────────────────────────────────────────
@@ -601,4 +568,8 @@ def options_chain():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(
+        host=APP_CONFIG['HOST'],
+        port=APP_CONFIG['PORT'],
+        debug=APP_CONFIG['DEBUG']
+    )
