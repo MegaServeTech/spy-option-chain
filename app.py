@@ -1,4 +1,5 @@
 import os
+import sys
 from flask import Flask, request, render_template
 import pandas as pd
 from sqlalchemy import create_engine, text, inspect
@@ -13,20 +14,68 @@ app = Flask(__name__)
 app.json_encoder = PlotlyJSONEncoder
 app.secret_key = APP_CONFIG['SECRET_KEY']
 
-# Database Connection
+# ═══════════════════════════════════════════════════════════════════
+#                    DATABASE CONNECTION
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n" + "=" * 70)
+print("🔌 INITIALIZING DATABASE CONNECTION")
+print("=" * 70)
+
+# Global flags for database health
+DB_CONNECTED = False
+engine = None
+inspector = None
+
 try:
-    engine = create_engine(APP_CONFIG['DATABASE_URL'], pool_pre_ping=True)
+    print("🔄 Creating database engine...")
+    engine = create_engine(
+        APP_CONFIG['DATABASE_URL'],
+        pool_pre_ping=True,  # Verify connections before using
+        pool_recycle=3600,   # Recycle connections after 1 hour
+        pool_size=10,        # Connection pool size
+        max_overflow=20,     # Max overflow connections
+        echo=False           # Set to True for SQL query logging
+    )
+    
+    print("🔄 Creating database inspector...")
     inspector = inspect(engine)
     
-    # Test connection
+    print("🔄 Testing database connection...")
     with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-    print(f"✅ Database connected successfully!")
+        result = conn.execute(text("SELECT 1 as test"))
+        test_value = result.scalar()
+        if test_value == 1:
+            DB_CONNECTED = True
+            print("✅ Database connection successful!")
+            print("✅ Connection test passed!")
+        else:
+            print("⚠️  Database responded but test query failed")
+    
 except Exception as e:
-    print(f"⚠️ Database connection error: {e}")
-    # Create engine anyway for app to start (will fail on first query)
-    engine = create_engine(APP_CONFIG['DATABASE_URL'], pool_pre_ping=True)
-    inspector = inspect(engine)
+    error_type = type(e).__name__
+    error_msg = str(e)
+    
+    print(f"❌ Database connection failed: {error_type}", file=sys.stderr)
+    print(f"❌ Error details: {error_msg}", file=sys.stderr)
+    
+    if APP_CONFIG.get('IS_PRODUCTION'):
+        print("\n" + "🚨" * 35, file=sys.stderr)
+        print("⚠️  RUNNING IN PRODUCTION WITHOUT DATABASE CONNECTION!", file=sys.stderr)
+        print("⚠️  Please configure DATABASE_URL environment variable.", file=sys.stderr)
+        print("🚨" * 35 + "\n", file=sys.stderr)
+    else:
+        print("\n⚠️  Local database not available. Some features may not work.", file=sys.stderr)
+    
+    # Create engine anyway to prevent import errors (queries will fail gracefully)
+    if not engine:
+        try:
+            engine = create_engine(APP_CONFIG['DATABASE_URL'], pool_pre_ping=True)
+            inspector = inspect(engine)
+        except Exception as inner_e:
+            print(f"❌ Failed to create database engine: {inner_e}", file=sys.stderr)
+
+print("=" * 70 + "\n")
 
 
 
