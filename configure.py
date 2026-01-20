@@ -1,8 +1,11 @@
 import os
-from dotenv import load_dotenv
 
-# Load .env variables (commented out for production)
-# load_dotenv()
+# Try to load dotenv if available (optional for production)
+try:
+    from dotenv import load_dotenv
+    # load_dotenv()  # Commented out for Cloud Run
+except ImportError:
+    pass  # python-dotenv not installed, use environment variables directly
 
 # Database Configuration
 # Priority: DATABASE_URL from environment, or build from individual vars with local defaults
