@@ -12,21 +12,56 @@ app = Flask(__name__)
 app.json_encoder = PlotlyJSONEncoder
 
 
-# MySQL Connection - Direct configuration (no environment variables)
-MYSQL_USER = 'msdb'
-MYSQL_PASSWORD = 'dbMega$3322'  
-MYSQL_HOST = '127.0.0.1'
-MYSQL_PORT = '3307'
-MYSQL_DB = 'spydata'
+# MySQL Connection - Supports both local and Cloud SQL
+# For Cloud SQL (Production): Uses Unix socket connection
+# For Local Development: Uses TCP connection (127.0.0.1:3307)
 
-# Create database if not exists
-engine_no_db = create_engine(f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}')
-with engine_no_db.connect() as conn:
-    conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}"))
-    conn.commit()
+MYSQL_USER = os.getenv('MYSQL_USER', 'msdb')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'dbMega$3322')
+MYSQL_DB = os.getenv('MYSQL_DB', 'spydata')
 
-engine = create_engine(f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}')
-inspector = inspect(engine)
+# Cloud SQL Configuration
+INSTANCE_CONNECTION_NAME = os.getenv('INSTANCE_CONNECTION_NAME')  # Format: project:region:instance
+
+# Build connection string based on environment
+if INSTANCE_CONNECTION_NAME:
+    # Production: Cloud SQL via Unix socket
+    db_connection_string = (
+        f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@/'
+        f'{MYSQL_DB}?unix_socket=/cloudsql/{INSTANCE_CONNECTION_NAME}'
+    )
+    print(f"🌐 Using Cloud SQL connection: {INSTANCE_CONNECTION_NAME}")
+else:
+    # Local: TCP connection
+    MYSQL_HOST = os.getenv('MYSQL_HOST', '127.0.0.1')
+    MYSQL_PORT = os.getenv('MYSQL_PORT', '3307')
+    db_connection_string = f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}'
+    print(f"💻 Using local connection: {MYSQL_HOST}:{MYSQL_PORT}")
+
+# Create database engine
+try:
+    engine = create_engine(
+        db_connection_string,
+        pool_size=5,
+        max_overflow=2,
+        pool_timeout=30,
+        pool_recycle=1800,
+        pool_pre_ping=True
+    )
+    inspector = inspect(engine)
+    
+    # Test connection
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    print(f"✅ Database connected successfully to {MYSQL_DB}")
+except Exception as e:
+    print(f"❌ Database connection failed: {e}")
+    if INSTANCE_CONNECTION_NAME:
+        print(f"   Cloud SQL Instance: {INSTANCE_CONNECTION_NAME}")
+    else:
+        print(f"   Connection: mysql+pymysql://{MYSQL_USER}:***@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}")
+    raise
+
 
 # ───────────────────────────────────────────────────────────────
 #         AUTOMATIC INDEX CREATION
