@@ -82,6 +82,28 @@ print("=" * 70 + "\n")
 # ───────────────────────────────────────────────────────────────
 #         AUTOMATIC INDEX CREATION
 # ───────────────────────────────────────────────────────────────
+def remove_indexes(table_name):
+    """Temporarily remove indexes for faster batch uploads"""
+    try:
+        with engine.connect() as conn:
+            if table_name == 'index_data':
+                try: 
+                    conn.execute(text("DROP INDEX idx_datetime_utc ON index_data"))
+                except Exception: 
+                    pass
+            elif table_name == 'option_data':
+                try: 
+                    conn.execute(text("DROP INDEX idx_utc_minute_expiry ON option_data"))
+                except Exception: 
+                    pass
+                try: 
+                    conn.execute(text("DROP INDEX idx_expiry_strike ON option_data"))
+                except Exception: 
+                    pass
+            conn.commit()
+    except Exception:
+        pass
+
 def ensure_indexes():
     try:
         with engine.connect() as conn:
@@ -145,6 +167,10 @@ def home():
             table_name = 'index_data' if upload_type == 'index' else 'option_data'
             req_col = 'datetime_UTC' if upload_type == 'index' else 'UTC_MINUTE'
             
+            # --- Drop Indexes for Performance ---
+            if inspector.has_table(table_name):
+                remove_indexes(table_name)
+
             with engine.connect() as conn:
                 conn.execute(text(f"CREATE TABLE IF NOT EXISTS {table_name} (id INT AUTO_INCREMENT PRIMARY KEY)"))
                 conn.commit()
@@ -156,36 +182,52 @@ def home():
                     continue
 
                 try:
-                    # Read CSV directly from upload stream
-                    df = pd.read_csv(file.stream)
-                    if req_col not in df.columns:
-                        raise ValueError(f"Missing required column: {req_col}")
+                    # Read CSV in chunks (Batches)
+                    chunk_size = 5000
+                    chunks = pd.read_csv(file.stream, chunksize=chunk_size)
+                    
+                    file_total_rows = 0
+                    first_chunk = True
+                    
+                    for df_chunk in chunks:
+                        # Validate required column existence in the first chunk
+                        if first_chunk:
+                            if req_col not in df_chunk.columns:
+                                raise ValueError(f"Missing required column: {req_col}")
+                        
+                        # Process Chunk
+                        start_rows = len(df_chunk)
+                        
+                        if upload_type == 'index':
+                            df_chunk['datetime_UTC'] = pd.to_datetime(df_chunk['datetime_UTC'], errors='coerce')
+                            df_chunk = df_chunk.dropna(subset=['datetime_UTC'])
+                            df_chunk['datetime_UTC'] = df_chunk['datetime_UTC'].dt.strftime('%d-%m-%Y %H:%M')
+                        else:
+                            df_chunk['UTC_MINUTE'] = pd.to_datetime(df_chunk['UTC_MINUTE'], unit='s', utc=True) \
+                                                    .dt.strftime('%d-%m-%Y %H:%M')
+                            df_chunk = df_chunk[~pd.to_datetime(df_chunk['UTC_MINUTE'], format='%d-%m-%Y %H:%M', errors='coerce').isna()]
 
-                    original_count = len(df)
+                        if len(df_chunk) == 0:
+                            continue
 
-                    if upload_type == 'index':
-                        df['datetime_UTC'] = pd.to_datetime(df['datetime_UTC'], errors='coerce')
-                        df = df.dropna(subset=['datetime_UTC'])
-                        df['datetime_UTC'] = df['datetime_UTC'].dt.strftime('%d-%m-%Y %H:%M')
-                    else:
-                        df['UTC_MINUTE'] = pd.to_datetime(df['UTC_MINUTE'], unit='s', utc=True)\
-                                            .dt.strftime('%d-%m-%Y %H:%M')
-                        df = df[~pd.to_datetime(df['UTC_MINUTE'], format='%d-%m-%Y %H:%M', errors='coerce').isna()]
-
-                    processed_count = len(df)
-                    if processed_count == 0:
-                        raise ValueError("No valid rows after preprocessing")
-
-                    add_missing_columns(table_name, df)
-                    df.to_sql(table_name, engine, if_exists='append', index=False)
+                        # Add valid missing columns (safe to call repeatedly as it checks existence)
+                        add_missing_columns(table_name, df_chunk)
+                        
+                        # Insert Chunk
+                        df_chunk.to_sql(table_name, engine, if_exists='append', index=False)
+                        
+                        file_total_rows += len(df_chunk)
+                        first_chunk = False
 
                     success_count += 1
-                    dropped = original_count - processed_count
-                    details.append(f"✅ {file.filename} - {original_count} → {processed_count} ({dropped} invalid)")
+                    details.append(f"✅ {file.filename} - Uploaded {file_total_rows} rows in batches")
 
-                except Exception:
+                except Exception as e:
                     fail_count += 1
-                    details.append(f"❌ {file.filename} - Processing failed")
+                    details.append(f"❌ {file.filename} - Failed: {str(e)}")
+
+            # --- Restore Indexes ---
+            ensure_indexes()
 
             alert_class = 'alert-success' if success_count > 0 else 'alert-danger'
             message = f"""
