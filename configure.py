@@ -1,72 +1,40 @@
+# configure.py
 import os
-import sys
+from dotenv import load_dotenv
 
-# Try to load dotenv if available (only for local development)
-try:
-    from dotenv import load_dotenv
-    # Uncomment below for local development with .env file
-    # load_dotenv()
-except ImportError:
-    pass  # python-dotenv not installed, use environment variables directly
+# Load .env variables
+load_dotenv()
 
-# ═══════════════════════════════════════════════════════════════════
-#                    PRODUCTION ENVIRONMENT DETECTION
-# ═══════════════════════════════════════════════════════════════════
+# Use the specific connection string provided by the user
+# Updated database name from 'mst' to 'spydata' as requested
+# This Unix Socket connection string is specifically for Cloud Run
+DEFAULT_URL = "mysql+pymysql://msdb:dbMega$3322@/spydata?unix_socket=/cloudsql/market-ana:asia-south1:msdb"
 
-# Detect if running in Cloud Run (more reliable than checking K_SERVICE alone)
-IS_CLOUD_RUN = os.getenv('K_SERVICE') is not None
-IS_LOCAL_DEV = not IS_CLOUD_RUN
+# Use environment variable if set, otherwise use the default provided string
+database_url = os.getenv('DATABASE_URL', DEFAULT_URL)
 
-print("=" * 70)
-print(f"🌍 Environment: {'CLOUD RUN (Production)' if IS_CLOUD_RUN else 'LOCAL DEVELOPMENT'}")
-print("=" * 70)
+# Validate required environment variable
+if not database_url:
+    raise ValueError("Missing required environment variable: DATABASE_URL")
 
-# ═══════════════════════════════════════════════════════════════════
-#                    DATABASE CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════
-
-DATABASE_URL = os.getenv('DATABASE_URL')
-
-if not DATABASE_URL:
-    # Use the user-provided URL directly as the default
-    DATABASE_URL = "mysql+pymysql://msdb:dbMega$3322@127.0.0.1:3307/spydata"
-    print(f"⚠️  DATABASE_URL not set. Using hardcoded default: {DATABASE_URL}")
-else:
-    print("✅ Using configured DATABASE_URL")
-
-# Check if using Cloud SQL Unix socket (recommended for Cloud Run)
-if IS_CLOUD_RUN and 'unix_socket' in DATABASE_URL:
-    print("✅ Using Cloud SQL Unix Socket")
-
-# Masked URL for logging (hide credentials)
-try:
-    masked_url = DATABASE_URL.replace(
-        DATABASE_URL.split('@')[0].split('://')[1],
-        '***:***'
-    )
-    print(f"🔗 Connection: {masked_url}")
-except Exception:
-    print(f"🔗 Connection: [unable to parse URL]")
-
-print("=" * 70)
-
-# ═══════════════════════════════════════════════════════════════════
-#                    APPLICATION CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════
+# Mask password for printing
+safe_print_url = database_url
+if "@" in safe_print_url:
+    try:
+        part1 = safe_print_url.split("@")[0]
+        part2 = safe_print_url.split("@")[1]
+        user_pass = part1.split("://")[1]
+        if ":" in user_pass:
+            safe_print_url = safe_print_url.replace(user_pass.split(":")[1], "***")
+    except:
+        pass
+print("database_url:", safe_print_url)
 
 APP_CONFIG = {
-    'PORT': int(os.getenv('PORT', 8080)),  # Cloud Run sets PORT=8080
-    'HOST': '0.0.0.0',  # Always bind to 0.0.0.0 in containers
-    'DEBUG': os.getenv('FLASK_DEBUG', 'False').lower() == 'true',
-    'SECRET_KEY': os.getenv('FLASK_SECRET_KEY', 'spy-option-chain-secret-key-2024'),
-    'DATABASE_URL': DATABASE_URL,
-    'IS_PRODUCTION': IS_CLOUD_RUN
+    # CRITICAL: Cloud Run sets 'PORT'. We must use it or the container will fail to start.
+    'PORT': int(os.getenv('PORT', 8080)),
+    'HOST': os.getenv('FLASK_HOST', '0.0.0.0'),
+    'DEBUG': os.getenv('FLASK_DEBUG', 'True').lower() == 'true',
+    'SECRET_KEY': os.getenv('FLASK_SECRET_KEY', 'your-secure-secret-key-1234567890'),
+    'DATABASE_URL': database_url
 }
-
-# Security: Never enable debug in production
-if IS_CLOUD_RUN and APP_CONFIG['DEBUG']:
-    print("⚠️  WARNING: Debug mode is enabled in production! Setting to False for security.")
-    APP_CONFIG['DEBUG'] = False
-
-print(f"🚀 App Config: Port={APP_CONFIG['PORT']}, Host={APP_CONFIG['HOST']}, Debug={APP_CONFIG['DEBUG']}")
-print("=" * 70)
