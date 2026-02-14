@@ -27,51 +27,16 @@ print("=" * 70)
 
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-if IS_CLOUD_RUN and not DATABASE_URL:
-    # In production (Cloud Run), DATABASE_URL is REQUIRED
-    error_msg = """
-    ╔════════════════════════════════════════════════════════════════╗
-    ║              ❌ CRITICAL CONFIGURATION ERROR ❌                ║
-    ╠════════════════════════════════════════════════════════════════╣
-    ║  DATABASE_URL environment variable is NOT SET in Cloud Run!   ║
-    ║                                                                ║
-    ║  For Cloud SQL (Unix Socket - RECOMMENDED):                   ║
-    ║  DATABASE_URL=mysql+pymysql://USER:PASS@/DB?unix_socket=/cloudsql/PROJECT:REGION:INSTANCE
-    ║                                                                ║
-    ║  For Cloud SQL (TCP):                                         ║
-    ║  DATABASE_URL=mysql+pymysql://USER:PASS@CLOUD_SQL_IP:3306/DB  ║
-    ║                                                                ║
-    ║  Set this in Cloud Run:                                       ║
-    ║  gcloud run services update SERVICE_NAME --set-env-vars       ║
-    ║    DATABASE_URL="your-connection-string"                      ║
-    ╚════════════════════════════════════════════════════════════════╝
-    """
-    print(error_msg, file=sys.stderr)
-    # Use the user-provided fallback URL
+if not DATABASE_URL:
+    # Use the user-provided URL directly as the default
     DATABASE_URL = "mysql+pymysql://msdb:dbMega$3322@127.0.0.1:3307/spydata"
-    print(f"⚠️  DATABASE_URL not set. Using hardcoded fallback: {DATABASE_URL}", file=sys.stderr)
-
-elif not DATABASE_URL:
-    # Local development: Build from individual environment variables or use defaults
-    MYSQL_USER = os.getenv('MYSQL_USER', 'msdb')
-    MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'dbMega$3322')
-    MYSQL_HOST = os.getenv('MYSQL_HOST', '127.0.0.1')
-    MYSQL_PORT = os.getenv('MYSQL_PORT', '3307')
-    MYSQL_DB = os.getenv('MYSQL_DB', 'spydata')
-    
-    DATABASE_URL = f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}'
-    print(f"📍 Local Database: {MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}")
+    print(f"⚠️  DATABASE_URL not set. Using hardcoded default: {DATABASE_URL}")
 else:
-    # DATABASE_URL is set (production or explicit local config)
-    if IS_CLOUD_RUN:
-        print("✅ DATABASE_URL configured for Cloud Run")
-        # Check if using Cloud SQL Unix socket (recommended)
-        if 'unix_socket=/cloudsql/' in DATABASE_URL:
-            print("✅ Using Cloud SQL Unix Socket (Recommended)")
-        else:
-            print("⚠️  Using TCP connection (Unix Socket recommended for Cloud SQL)")
-    else:
-        print("✅ DATABASE_URL configured for local development")
+    print("✅ Using configured DATABASE_URL")
+
+# Check if using Cloud SQL Unix socket (recommended for Cloud Run)
+if IS_CLOUD_RUN and 'unix_socket' in DATABASE_URL:
+    print("✅ Using Cloud SQL Unix Socket")
 
 # Masked URL for logging (hide credentials)
 try:

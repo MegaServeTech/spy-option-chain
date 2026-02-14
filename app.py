@@ -74,13 +74,14 @@ except Exception as e:
     print(f"Database connection failed: {error_type}", file=sys.stderr)
     print(f"Error details: {error_msg}", file=sys.stderr)
     
-    if APP_CONFIG.get('IS_PRODUCTION'):
-        print("\n" + "!" * 70, file=sys.stderr)
-        print("WARNING: RUNNING IN PRODUCTION WITHOUT DATABASE CONNECTION!", file=sys.stderr)
-        print("WARNING: Please configure DATABASE_URL environment variable.", file=sys.stderr)
-        print("!" * 70 + "\n", file=sys.stderr)
-    else:
-        print("\nWARNING: Local database not available. Some features may not work.", file=sys.stderr)
+    # Mask password for safe logging
+    safe_url = APP_CONFIG['DATABASE_URL'].replace(
+        APP_CONFIG['DATABASE_URL'].split('@')[0].split('://')[1],
+        '***:***'
+    ) if '@' in APP_CONFIG['DATABASE_URL'] else APP_CONFIG['DATABASE_URL']
+    
+    print(f"❌ Failed to connect to database at: {safe_url}", file=sys.stderr)
+    print("If running in Cloud Run, ensure the database is accessible (e.g. via Cloud SQL Auth Proxy sidecar if using localhost).", file=sys.stderr)
     
     # Create engine anyway to prevent import errors (queries will fail gracefully)
     if not engine:
