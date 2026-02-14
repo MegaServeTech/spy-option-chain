@@ -14,18 +14,33 @@ app = Flask(__name__)
 app.json_encoder = PlotlyJSONEncoder
 app.secret_key = APP_CONFIG['SECRET_KEY']
 
+# Global dictionary for upload progress
+UPLOAD_PROGRESS = {}
+
+def get_db_inspector():
+    """Get a fresh database inspector to ensure we see newly created tables"""
+    try:
+        return inspect(engine)
+    except Exception as e:
+        print(f"Error creating inspector: {e}")
+        return None
+
+@app.route('/api/progress/<task_id>')
+def get_progress(task_id):
+    return json.dumps(UPLOAD_PROGRESS.get(task_id, {'progress': 0, 'details': 'Waiting...'}))
+
 # ═══════════════════════════════════════════════════════════════════
 #                    DATABASE CONNECTION
 # ═══════════════════════════════════════════════════════════════════
 
 print("\n" + "=" * 70)
-print("🔌 INITIALIZING DATABASE CONNECTION")
+print("INITIALIZING DATABASE CONNECTION")
 print("=" * 70)
 
 # Global flags for database health
 DB_CONNECTED = False
 engine = None
-inspector = None
+# inspector = None # Global inspector removed in favor of fresh inspection
 
 try:
     print("🔄 Creating database engine...")
@@ -39,7 +54,7 @@ try:
     )
     
     print("🔄 Creating database inspector...")
-    inspector = inspect(engine)
+    # inspector = inspect(engine) # Start-up inspection not strictly needed globally anymore
     
     print("🔄 Testing database connection...")
     with engine.connect() as conn:
@@ -47,31 +62,31 @@ try:
         test_value = result.scalar()
         if test_value == 1:
             DB_CONNECTED = True
-            print("✅ Database connection successful!")
-            print("✅ Connection test passed!")
+            print("Database connection successful!")
+            print("Connection test passed!")
         else:
-            print("⚠️  Database responded but test query failed")
+            print("WARNING: Database responded but test query failed")
     
 except Exception as e:
     error_type = type(e).__name__
     error_msg = str(e)
     
-    print(f"❌ Database connection failed: {error_type}", file=sys.stderr)
-    print(f"❌ Error details: {error_msg}", file=sys.stderr)
+    print(f"Database connection failed: {error_type}", file=sys.stderr)
+    print(f"Error details: {error_msg}", file=sys.stderr)
     
     if APP_CONFIG.get('IS_PRODUCTION'):
-        print("\n" + "🚨" * 35, file=sys.stderr)
-        print("⚠️  RUNNING IN PRODUCTION WITHOUT DATABASE CONNECTION!", file=sys.stderr)
-        print("⚠️  Please configure DATABASE_URL environment variable.", file=sys.stderr)
-        print("🚨" * 35 + "\n", file=sys.stderr)
+        print("\n" + "!" * 70, file=sys.stderr)
+        print("WARNING: RUNNING IN PRODUCTION WITHOUT DATABASE CONNECTION!", file=sys.stderr)
+        print("WARNING: Please configure DATABASE_URL environment variable.", file=sys.stderr)
+        print("!" * 70 + "\n", file=sys.stderr)
     else:
-        print("\n⚠️  Local database not available. Some features may not work.", file=sys.stderr)
+        print("\nWARNING: Local database not available. Some features may not work.", file=sys.stderr)
     
     # Create engine anyway to prevent import errors (queries will fail gracefully)
     if not engine:
         try:
             engine = create_engine(APP_CONFIG['DATABASE_URL'], pool_pre_ping=True)
-            inspector = inspect(engine)
+            # inspector = inspect(engine)
         except Exception as inner_e:
             print(f"❌ Failed to create database engine: {inner_e}", file=sys.stderr)
 
@@ -106,14 +121,17 @@ def remove_indexes(table_name):
 
 def ensure_indexes():
     try:
+        current_inspector = get_db_inspector()
+        if not current_inspector: return
+
         with engine.connect() as conn:
-            if inspector.has_table('index_data'):
-                indexes = {idx['name'] for idx in inspector.get_indexes('index_data')}
+            if current_inspector.has_table('index_data'):
+                indexes = {idx['name'] for idx in current_inspector.get_indexes('index_data')}
                 if 'idx_datetime_utc' not in indexes:
                     conn.execute(text("ALTER TABLE index_data ADD INDEX idx_datetime_utc (datetime_UTC)"))
 
-            if inspector.has_table('option_data'):
-                indexes = {idx['name'] for idx in inspector.get_indexes('option_data')}
+            if current_inspector.has_table('option_data'):
+                indexes = {idx['name'] for idx in current_inspector.get_indexes('option_data')}
                 if 'idx_utc_minute_expiry' not in indexes:
                     conn.execute(text("ALTER TABLE option_data ADD INDEX idx_utc_minute_expiry (UTC_MINUTE, EXPIRY_DATE)"))
                 if 'idx_expiry_strike' not in indexes:
@@ -127,10 +145,11 @@ ensure_indexes()
 
 # Safe column addition
 def add_missing_columns(table_name, df):
-    if not inspector.has_table(table_name):
+    current_inspector = get_db_inspector()
+    if not current_inspector or not current_inspector.has_table(table_name):
         return
     try:
-        existing_cols = {col['name'] for col in inspector.get_columns(table_name)}
+        existing_cols = {col['name'] for col in current_inspector.get_columns(table_name)}
     except:
         existing_cols = set()
     new_cols = set(df.columns) - existing_cols
@@ -168,7 +187,8 @@ def home():
             req_col = 'datetime_UTC' if upload_type == 'index' else 'UTC_MINUTE'
             
             # --- Drop Indexes for Performance ---
-            if inspector.has_table(table_name):
+            current_inspector = get_db_inspector()
+            if current_inspector and current_inspector.has_table(table_name):
                 remove_indexes(table_name)
 
             with engine.connect() as conn:
@@ -182,6 +202,11 @@ def home():
                     continue
 
                 try:
+                    # Count total lines for progress
+                    file.stream.seek(0)
+                    total_lines = sum(1 for line in file.stream)
+                    file.stream.seek(0)
+                    
                     # Read CSV in chunks (Batches)
                     chunk_size = 5000
                     chunks = pd.read_csv(file.stream, chunksize=chunk_size)
@@ -189,6 +214,8 @@ def home():
                     file_total_rows = 0
                     first_chunk = True
                     
+                    task_id = request.form.get('task_id')
+
                     for df_chunk in chunks:
                         # Validate required column existence in the first chunk
                         if first_chunk:
@@ -199,13 +226,21 @@ def home():
                         start_rows = len(df_chunk)
                         
                         if upload_type == 'index':
-                            df_chunk['datetime_UTC'] = pd.to_datetime(df_chunk['datetime_UTC'], errors='coerce')
+                            df_chunk['datetime_UTC'] = pd.to_datetime(df_chunk['datetime_UTC'], dayfirst=True, errors='coerce')
                             df_chunk = df_chunk.dropna(subset=['datetime_UTC'])
-                            df_chunk['datetime_UTC'] = df_chunk['datetime_UTC'].dt.strftime('%d-%m-%Y %H:%M')
+                            # Ensure format matches MySQL DATETIME (YYYY-MM-DD HH:MM:SS)
+                            df_chunk['datetime_UTC'] = df_chunk['datetime_UTC'].dt.strftime('%Y-%m-%d %H:%M:%S')
                         else:
-                            df_chunk['UTC_MINUTE'] = pd.to_datetime(df_chunk['UTC_MINUTE'], unit='s', utc=True) \
-                                                    .dt.strftime('%d-%m-%Y %H:%M')
-                            df_chunk = df_chunk[~pd.to_datetime(df_chunk['UTC_MINUTE'], format='%d-%m-%Y %H:%M', errors='coerce').isna()]
+                            # Ensure format matches MySQL DATETIME (YYYY-MM-DD HH:MM:SS)
+                            # First parse string to datetime objects correctly
+                            if df_chunk['UTC_MINUTE'].dtype == 'object':
+                                df_chunk['temp_dt'] = pd.to_datetime(df_chunk['UTC_MINUTE'], dayfirst=True, errors='coerce')
+                            else:
+                                # If it's epochs
+                                df_chunk['temp_dt'] = pd.to_datetime(df_chunk['UTC_MINUTE'], unit='s', utc=True)
+                            
+                            df_chunk['UTC_MINUTE'] = df_chunk['temp_dt'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                            df_chunk = df_chunk.dropna(subset=['temp_dt']).drop(columns=['temp_dt'])
 
                         if len(df_chunk) == 0:
                             continue
@@ -218,6 +253,14 @@ def home():
                         
                         file_total_rows += len(df_chunk)
                         first_chunk = False
+
+                        # Update Progress
+                        if task_id:
+                            progress_pct = int((file_total_rows / total_lines) * 100)
+                            UPLOAD_PROGRESS[task_id] = {
+                                'progress': progress_pct,
+                                'details': f"Processing {file.filename}: {file_total_rows}/{total_lines} rows"
+                            }
 
                     success_count += 1
                     details.append(f"✅ {file.filename} - Uploaded {file_total_rows} rows in batches")
@@ -237,6 +280,11 @@ def home():
                 <small>{'<br>'.join(details)}</small>
             </div>
             """
+            
+            # Clear progress
+            task_id = request.form.get('task_id')
+            if task_id and task_id in UPLOAD_PROGRESS:
+                del UPLOAD_PROGRESS[task_id]
 
     return render_template('index.html', message=message)
 
@@ -245,9 +293,11 @@ def home():
 def view_data():
     index_table = '<p>No index data yet.</p>'
     option_table = '<p>No option data yet.</p>'
+    
+    current_inspector = get_db_inspector()
 
     try:
-        if inspector.has_table('index_data'):
+        if current_inspector and current_inspector.has_table('index_data'):
             df = pd.read_sql('SELECT * FROM index_data ORDER BY id DESC LIMIT 10', engine)
             if not df.empty:
                 index_table = df.to_html(classes='table table-striped table-bordered', index=False)
@@ -255,7 +305,7 @@ def view_data():
         index_table = '<p>Error reading preview</p>'
 
     try:
-        if inspector.has_table('option_data'):
+        if current_inspector and current_inspector.has_table('option_data'):
             df = pd.read_sql('SELECT * FROM option_data ORDER BY id DESC LIMIT 10', engine)
             if not df.empty:
                 option_table = df.to_html(classes='table table-striped table-bordered', index=False)
@@ -267,25 +317,67 @@ def view_data():
 
 @app.route('/options_chain', methods=['GET'])
 def options_chain():
-    available_dates = []
-    formatted_dates = []
+    current_inspector = get_db_inspector()
+    print("DEBUG: Fetching available dates (Direct SQL Method)...")
+    
+    # helper to get dates from a query
+    def fetch_dates_from_query(query, label):
+        try:
+            with engine.connect() as conn:
+                res = conn.execute(text(query))
+                rows = [r[0] for r in res.fetchall() if r[0]]
+                print(f"DEBUG: {label} returned {len(rows)} raw dates")
+                return rows
+        except Exception as e:
+            # Table likely doesn't exist or other DB error
+            print(f"DEBUG: {label} query failed (Table might be missing): {e}")
+            return []
 
+    # Try index_data
+    # Use simple string slicing for max compatibility if stored as text
+    i_dates = set(fetch_dates_from_query(
+        "SELECT DISTINCT SUBSTR(datetime_UTC, 1, 10) FROM index_data WHERE datetime_UTC IS NOT NULL", 
+        "index_data"
+    ))
+
+    # Try option_data
+    o_dates = set(fetch_dates_from_query(
+        "SELECT DISTINCT SUBSTR(UTC_MINUTE, 1, 10) FROM option_data WHERE UTC_MINUTE IS NOT NULL", 
+        "option_data"
+    ))
+    
+    # Filter dates present in BOTH tables (Intersection -> Union for more visibility)
+    if i_dates or o_dates:
+        raw_dates = i_dates.union(o_dates)
+        print(f"DEBUG: Found {len(raw_dates)} unique dates across both tables")
+    else:
+        raw_dates = set()
+        print("DEBUG: Both tables missing data")
+    
+    # Process and Sort
     try:
-        date_query = """
-            SELECT DISTINCT SUBSTR(datetime_UTC, 1, 10) AS trade_date
-            FROM index_data
-            WHERE datetime_UTC IS NOT NULL
-            ORDER BY trade_date DESC
-        """
-        df_dates = pd.read_sql(date_query, engine)
-        if not df_dates.empty:
-            unique_dates = pd.to_datetime(df_dates['trade_date'], format='%d-%m-%Y', errors='coerce').dropna()
+        if raw_dates:
+            # Convert to pandas for easy handling
+            df_dates = pd.DataFrame(list(raw_dates), columns=['trade_date'])
+            
+            # Robust parsing - explicitly handle DD-MM-YYYY
+            unique_dates = pd.to_datetime(df_dates['trade_date'], dayfirst=True, errors='coerce').dropna()
+            unique_dates = unique_dates.sort_values(ascending=False)
+            
             available_dates = unique_dates.dt.strftime('%Y-%m-%d').tolist()
             formatted_dates = unique_dates.dt.strftime('%d %b %Y').tolist()
-    except Exception:
-        pass
+            print(f"DEBUG: Final available_dates: {available_dates}")
+        else:
+            print("DEBUG: No dates found in either table.")
+            
+    except Exception as e:
+        print(f"ERROR processing dates: {e}")
+        import traceback
+        traceback.print_exc()
 
     selected_date = request.args.get('date') or (available_dates[0] if available_dates else None)
+    print(f"DEBUG: Selected date: {selected_date}")
+    
     selected_time = request.args.get('time')
     selected_expiry = request.args.get('expiry', '0DTE')
     strike_steps = int(request.args.get('steps', 10))
@@ -316,17 +408,33 @@ def options_chain():
         )
 
     trading_date_obj = datetime.strptime(selected_date, "%Y-%m-%d")
-    utc_minute_date = trading_date_obj.strftime("%d-%m-%Y")
+    # Database stores dates as YYYY-MM-DD
+    utc_minute_date = trading_date_obj.strftime("%Y-%m-%d")
 
     # Load full day index data
+    # Load full day index data for times, or fallback to option data
+    index_df = pd.DataFrame()
     try:
-        index_df = pd.read_sql(
-            text("SELECT datetime_UTC, `open` FROM index_data WHERE datetime_UTC LIKE :day ORDER BY datetime_UTC"),
-            engine, params={"day": f"{utc_minute_date} %"}
-        )
+        if current_inspector and current_inspector.has_table('index_data'):
+            # Fetch data using both format possibilities to be safe
+            day_fmt_mysql = trading_date_obj.strftime("%d-%m-%Y")
+            day_fmt_iso = trading_date_obj.strftime("%Y-%m-%d")
+            
+            index_df = pd.read_sql(
+                text("SELECT datetime_UTC, `open` FROM index_data WHERE datetime_UTC LIKE :dm OR datetime_UTC LIKE :iso ORDER BY datetime_UTC"),
+                engine, params={"dm": f"{day_fmt_mysql}%", "iso": f"{day_fmt_iso}%"}
+            )
+        
+        # If no index data, try to get times from option data
+        if index_df.empty and current_inspector and current_inspector.has_table('option_data'):
+             day_fmt_mysql = trading_date_obj.strftime("%d-%m-%Y")
+             day_fmt_iso = trading_date_obj.strftime("%Y-%m-%d")
+             time_query = text("SELECT DISTINCT UTC_MINUTE as datetime_UTC FROM option_data WHERE UTC_MINUTE LIKE :dm OR UTC_MINUTE LIKE :iso ORDER BY UTC_MINUTE")
+             index_df = pd.read_sql(time_query, engine, params={"dm": f"{day_fmt_mysql}%", "iso": f"{day_fmt_iso}%"})
+             index_df['open'] = None # No price available
 
         if index_df.empty:
-            chain_html = "<p class='text-danger'>No index data found for this date.</p>"
+            chain_html = "<p class='text-danger'>No data found for this date.</p>"
             return render_template('options_chain.html',
                                  dates=available_dates, formatted_dates=formatted_dates,
                                  selected_date=selected_date, times=available_times, filtered_times=filtered_times,
@@ -336,118 +444,171 @@ def options_chain():
                                  atm_straddle_chart=atm_straddle_chart, straddle_comparison_chart=straddle_comparison_chart,
                                  selected_comparison=selected_comparison, slider_value=slider_value)
 
-        available_times = index_df['datetime_UTC'].tolist()
+        # Ensure datetime strings
+        index_df['datetime_UTC'] = index_df['datetime_UTC'].astype(str)
+        available_times = [t for t in index_df['datetime_UTC'].tolist() if t and t != 'None' and t != 'nan']
 
         if not selected_time and available_times:
-            selected_time = available_times[0]
+            selected_time = available_times[-1]
 
-        filtered_times = [t for t in available_times if '13:30' <= t[11:16] <= '20:15']
+        filtered_times = [t for t in available_times if len(t) >= 16 and '13:30' <= t[11:16] <= '20:15']
         filtered_times.sort()
+        
+        # If no times in trading window, just show all valid times
+        if not filtered_times and available_times:
+            filtered_times = available_times
 
         if filtered_times:
             if selected_time not in filtered_times:
                 selected_time = filtered_times[-1]
-            slider_value = filtered_times.index(selected_time)
+            try:
+                slider_value = filtered_times.index(selected_time)
+            except ValueError:
+                slider_value = 0
 
-        current_row = index_df[index_df['datetime_UTC'] == selected_time]
-        if not current_row.empty:
-            open_price = float(current_row.iloc[0]['open'])
-            frac = open_price % 1
-            atm_strike = int(np.floor(open_price)) if frac < 0.5 else int(np.ceil(open_price))
+        # Get open price and ATM strike if available
+        if 'open' in index_df.columns:
+            current_row = index_df[index_df['datetime_UTC'] == selected_time]
+            if not current_row.empty and pd.notna(current_row.iloc[0]['open']):
+                open_price = float(current_row.iloc[0]['open'])
+                frac = open_price % 1
+                atm_strike = int(np.floor(open_price)) if frac < 0.5 else int(np.ceil(open_price))
 
-    except Exception:
-        chain_html = "<p class='text-danger'>Error loading price data</p>"
+    except Exception as e:
+        chain_html = f"<p class='text-danger'>Error loading data: {str(e)}</p>"
 
     # Fast Option Chain
-    if atm_strike is not None:
-        try:
-            exp_offset = {'0DTE': 0, '1DTE': 1, '2DTE': 2}.get(selected_expiry, 0)
-            expiry_date_obj = trading_date_obj + timedelta(days=exp_offset)
-            expiry_str = expiry_date_obj.strftime("%Y-%m-%d")
-            selected_expiry_display = f"{expiry_str} ({selected_expiry})"
+    import traceback
+    try:
+        exp_offset = {'0DTE': 0, '1DTE': 1, '2DTE': 2}.get(selected_expiry, 0)
+        expiry_date_obj = trading_date_obj + timedelta(days=exp_offset)
+        expiry_str = expiry_date_obj.strftime("%Y-%m-%d")
+        selected_expiry_display = f"{expiry_str} ({selected_expiry})"
 
-            opt_df_chain = pd.read_sql(
-                text("""
-                    SELECT STRIKE, OPTION_TYPE, bid_open, ask_open
-                    FROM option_data
-                    WHERE UTC_MINUTE = :tm AND EXPIRY_DATE = :exp
-                    ORDER BY STRIKE
-                """),
-                engine, params={"tm": selected_time, "exp": expiry_str}
+        # Use loose matching for time (first 16 chars: YYYY-MM-DD HH:MM)
+        # This handles cases where one has seconds and other doesn't
+        # Try both formats for option data as well
+        day_fmt_mysql = trading_date_obj.strftime("%d-%m-%Y")
+        day_fmt_iso = trading_date_obj.strftime("%Y-%m-%d")
+
+        # Handle time pattern - it could be in either order too, but time is usually at end
+        # We'll stick to prefix matching for the date part
+        
+        opt_df_chain = pd.read_sql(
+            text("""
+                SELECT STRIKE, OPTION_TYPE, bid_open, ask_open
+                FROM option_data
+                WHERE (UTC_MINUTE LIKE :dm_tm OR UTC_MINUTE LIKE :iso_tm) AND EXPIRY_DATE = :exp
+                ORDER BY STRIKE
+            """),
+            engine, params={
+                "dm_tm": f"{day_fmt_mysql}%", 
+                "iso_tm": f"{day_fmt_iso}%", 
+                "exp": expiry_str
+            }
+        )
+        
+        # If we have too much data (multiple minutes), filter to the specific time in Pandas
+        if not opt_df_chain.empty and selected_time:
+             # This is a fallback to ensure we get exactly the right minute if LIKE was too broad
+             # (though typically LIKE works fine if prefix is unique)
+             pass 
+        
+        # Calculate ATM strike if not already known
+        if atm_strike is None and not opt_df_chain.empty:
+             opt_df_chain['STRIKE'] = pd.to_numeric(opt_df_chain['STRIKE'], errors='coerce')
+             valid_strikes = opt_df_chain['STRIKE'].dropna()
+             if not valid_strikes.empty:
+                 atm_strike = int(valid_strikes.median())
+
+        if opt_df_chain.empty:
+            time_display = selected_time[11:16] if selected_time and len(selected_time) >= 16 else "N/A"
+            chain_html = f"""
+            <div class="text-center py-5">
+                <p class="lead text-muted">No options found for this minute</p>
+                <p>Time: {time_display} | Expiry: {selected_expiry_display}</p>
+                <p>ATM: {atm_strike if atm_strike else 'Unknown'}</p>
+            </div>
+            """
+        elif atm_strike is not None:
+            opt_df_chain['STRIKE'] = pd.to_numeric(opt_df_chain['STRIKE'], errors='coerce')
+            opt_df_chain['bid_open'] = pd.to_numeric(opt_df_chain['bid_open'], errors='coerce')
+            opt_df_chain['ask_open'] = pd.to_numeric(opt_df_chain['ask_open'], errors='coerce')
+
+            lower = atm_strike - strike_steps
+            upper = atm_strike + strike_steps
+
+            df_option = opt_df_chain[opt_df_chain['STRIKE'].between(lower, upper)]
+
+            if df_option.empty:
+                # If range is empty (maybe huge gap), just show what we have near median
+                 df_option = opt_df_chain.iloc[max(0, len(opt_df_chain)//2 - strike_steps) : min(len(opt_df_chain), len(opt_df_chain)//2 + strike_steps)]
+
+
+            pivot = df_option.pivot_table(
+                index='STRIKE', columns='OPTION_TYPE',
+                values=['bid_open', 'ask_open'], aggfunc='first'
+            )
+            # Safe join for columns
+            pivot.columns = ['_'.join(str(c) for c in col).strip() for col in pivot.columns.values]
+            pivot = pivot.reset_index()
+
+            pivot.rename(columns={
+                'bid_open_C': 'Call_Bid', 'ask_open_C': 'Call_Ask',
+                'bid_open_P': 'Put_Bid', 'ask_open_P': 'Put_Ask'
+            }, inplace=True)
+
+            all_strikes = pd.DataFrame({'STRIKE': range(int(df_option['STRIKE'].min()), int(df_option['STRIKE'].max()) + 1)})
+            chain = pd.merge(all_strikes, pivot, on='STRIKE', how='left')
+            chain = chain[['Call_Bid', 'Call_Ask', 'STRIKE', 'Put_Bid', 'Put_Ask']]
+
+            for col in ['Call_Bid', 'Call_Ask', 'Put_Bid', 'Put_Ask']:
+                if col in chain.columns:
+                     chain[col] = pd.to_numeric(chain[col], errors='coerce')
+
+            def highlight_atm(row):
+                return ['background-color: #fffbe6; font-weight: bold;' if row['STRIKE'] == atm_strike else '' for _ in row]
+            
+            # Helper to handle missing columns gracefully
+            format_dict = {'STRIKE': '{:.0f}'}
+            for col in ['Call_Bid', 'Call_Ask', 'Put_Bid', 'Put_Ask']:
+                if col in chain.columns:
+                    format_dict[col] = '{:.2f}'
+
+            styled = chain.style.apply(highlight_atm, axis=1).format(format_dict, na_rep='—')
+
+            price_display = f"{open_price:.2f}" if open_price else "N/A"
+            time_display = selected_time[11:16] if selected_time else "N/A"
+
+            header = f"""
+            <div class="text-center mb-4">
+                <h4 class="text-primary fw-bold">ATM Strike: {atm_strike}</h4>
+                <p class="text-muted">
+                    Open Price: <strong>{price_display}</strong><br>
+                    Time: <strong>{time_display}</strong> | 
+                    Expiry: <strong>{selected_expiry_display}</strong> | 
+                    ±{strike_steps} strikes
+                </p>
+            </div>
+            """
+            chain_html = header + styled.to_html(
+                classes='table table-sm table-hover text-center w-75 mx-auto',
+                index=False
             )
 
-            if opt_df_chain.empty:
-                chain_html = f"""
-                <div class="text-center py-5">
-                    <p class="lead text-muted">No options found for this minute</p>
-                    <p>Time: {selected_time[11:16]} | Expiry: {selected_expiry_display}</p>
-                    <p>ATM: {atm_strike}</p>
-                </div>
-                """
-            else:
-                opt_df_chain['STRIKE'] = pd.to_numeric(opt_df_chain['STRIKE'], errors='coerce')
-                opt_df_chain['bid_open'] = pd.to_numeric(opt_df_chain['bid_open'], errors='coerce')
-                opt_df_chain['ask_open'] = pd.to_numeric(opt_df_chain['ask_open'], errors='coerce')
-
-                lower = atm_strike - strike_steps
-                upper = atm_strike + strike_steps
-
-                df_option = opt_df_chain[opt_df_chain['STRIKE'].between(lower, upper)]
-
-                if df_option.empty:
-                    chain_html = "<p class='text-center'>No options in selected strike range</p>"
-                else:
-                    pivot = df_option.pivot_table(
-                        index='STRIKE', columns='OPTION_TYPE',
-                        values=['bid_open', 'ask_open'], aggfunc='first'
-                    )
-                    pivot.columns = ['_'.join(col).strip() for col in pivot.columns.values]
-                    pivot = pivot.reset_index()
-
-                    pivot.rename(columns={
-                        'bid_open_C': 'Call_Bid', 'ask_open_C': 'Call_Ask',
-                        'bid_open_P': 'Put_Bid', 'ask_open_P': 'Put_Ask'
-                    }, inplace=True)
-
-                    all_strikes = pd.DataFrame({'STRIKE': range(lower, upper + 1)})
-                    chain = pd.merge(all_strikes, pivot, on='STRIKE', how='left')
-                    chain = chain[['Call_Bid', 'Call_Ask', 'STRIKE', 'Put_Bid', 'Put_Ask']]
-
-                    for col in ['Call_Bid', 'Call_Ask', 'Put_Bid', 'Put_Ask']:
-                        chain[col] = pd.to_numeric(chain[col], errors='coerce')
-
-                    def highlight_atm(row):
-                        return ['background-color: #fffbe6; font-weight: bold;' if row['STRIKE'] == atm_strike else '' for _ in row]
-
-                    styled = chain.style.apply(highlight_atm, axis=1).format({
-                        'Call_Bid': '{:.2f}', 'Call_Ask': '{:.2f}',
-                        'Put_Bid': '{:.2f}', 'Put_Ask': '{:.2f}',
-                        'STRIKE': '{:.0f}'
-                    }, na_rep='—')
-
-                    header = f"""
-                    <div class="text-center mb-4">
-                        <h4 class="text-primary fw-bold">ATM Strike: {atm_strike}</h4>
-                        <p class="text-muted">
-                            Open Price: <strong>{open_price:.2f}</strong><br>
-                            Time: <strong>{selected_time[11:16]}</strong> | 
-                            Expiry: <strong>{selected_expiry_display}</strong> | 
-                            ±{strike_steps} strikes
-                        </p>
-                    </div>
-                    """
-                    chain_html = header + styled.to_html(
-                        classes='table table-sm table-hover text-center w-75 mx-auto',
-                        index=False
-                    )
-
-        except Exception:
-            chain_html = "<p class='text-danger'>Error building option chain</p>"
+    except Exception as e:
+        traceback.print_exc()
+        chain_html = f"<p class='text-danger'>Error building option chain: {str(e)}</p>"
 
     # ── Charts ───────────────────────────────────────────────────────
     try:
         price_df = index_df.copy()
-        price_df['dt'] = pd.to_datetime(price_df['datetime_UTC'], format='%d-%m-%Y %H:%M', errors='coerce')
+        # Changed format to match DB YYYY-MM-DD
+        price_df['dt'] = pd.to_datetime(price_df['datetime_UTC'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+        if price_df['dt'].isna().all():
+             # Fallback if format is different (e.g. no seconds or T separator)
+             price_df['dt'] = pd.to_datetime(price_df['datetime_UTC'], dayfirst=True, errors='coerce')
+             
         price_df = price_df.dropna(subset=['dt']).sort_values('dt')
 
         session_mask = (
@@ -456,6 +617,9 @@ def options_chain():
         )
         filtered_df = price_df[session_mask]
 
+        # Normalize times to 16-char strings (YYYY-MM-DD HH:MM) for reliable matching
+        filtered_df['match_time'] = filtered_df['dt'].dt.strftime('%Y-%m-%d %H:%M')
+        
         times = filtered_df['dt'].dt.strftime('%H:%M').tolist()
         prices = filtered_df['open'].astype(float).tolist()
 
@@ -479,13 +643,16 @@ def options_chain():
 
         # Straddle charts
         if not filtered_df.empty:
+            day_fmt_mysql = trading_date_obj.strftime("%d-%m-%Y")
+            day_fmt_iso = trading_date_obj.strftime("%Y-%m-%d")
+            
             opt_df = pd.read_sql(
                 text("""
                     SELECT UTC_MINUTE, STRIKE, OPTION_TYPE, bid_open, ask_open, EXPIRY_DATE
                     FROM option_data
-                    WHERE UTC_MINUTE LIKE :day_prefix
+                    WHERE UTC_MINUTE LIKE :dm OR UTC_MINUTE LIKE :iso
                 """),
-                engine, params={"day_prefix": f"{utc_minute_date} %"}
+                engine, params={"dm": f"{day_fmt_mysql}%", "iso": f"{day_fmt_iso}%"}
             )
 
             if not opt_df.empty:
@@ -494,7 +661,13 @@ def options_chain():
                 opt_df['ask_open'] = pd.to_numeric(opt_df['ask_open'], errors='coerce')
                 opt_df = opt_df.dropna(subset=['STRIKE', 'bid_open', 'ask_open', 'EXPIRY_DATE'])
 
-                opt_by_time = opt_df.groupby('UTC_MINUTE')
+                # Normalize UTC_MINUTE for grouping
+                opt_df['match_time'] = pd.to_datetime(opt_df['UTC_MINUTE'], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
+                
+                # Normalize EXPIRY_DATE for matching
+                opt_df['match_expiry'] = pd.to_datetime(opt_df['EXPIRY_DATE'], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+                
+                opt_by_time = opt_df.groupby('match_time')
 
                 dte_list = [
                     ('0DTE', trading_date_obj),
@@ -515,15 +688,15 @@ def options_chain():
 
                     for _, row in filtered_df.iterrows():
                         underlying = float(row['open'])
-                        utc_time = row['datetime_UTC']
+                        match_time = row['match_time']
 
-                        if utc_time not in opt_by_time.groups:
+                        if match_time not in opt_by_time.groups:
                             straddle_prices.append(np.nan)
                             used_strikes.append(None)
                             continue
 
-                        time_group = opt_by_time.get_group(utc_time)
-                        exp_group = time_group[time_group['EXPIRY_DATE'] == exp_str]
+                        time_group = opt_by_time.get_group(match_time)
+                        exp_group = time_group[time_group['match_expiry'] == exp_str]
 
                         if exp_group.empty:
                             straddle_prices.append(np.nan)

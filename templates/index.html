@@ -39,40 +39,13 @@
             font-weight: 500;
             color: #495057;
         }
-
-        #loadingOverlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.9);
-            z-index: 9999;
-            display: none;
-            justify-content: center;
-            align-items: center;
-            flex-direction: column;
-            backdrop-filter: blur(5px);
-        }
-
-        .spinner-grow {
-            width: 3rem;
-            height: 3rem;
-        }
     </style>
 </head>
 
 <body class="bg-light">
-    <!-- Loading Overlay -->
-    <div id="loadingOverlay">
-        <div class="spinner-grow text-primary" role="status">
-            <span class="visually-hidden">Loading...</span>
-        </div>
-        <h3 class="mt-4 text-primary fw-bold">Processing Batches...</h3>
-        <p class="text-muted fs-5">Inserting data chunks into database</p>
-    </div>
+
     <div class="container mt-5 main-content">
-        <h1 class="text-center mb-5 display-5 fw-bold text-primary">SPY Options Data System</h1>
+        <h1 class="text-center mb-5 display-5 fw-bold text-primary">SPY Options Data System v2</h1>
 
         {% if message %}
         <div class="alert alert-info alert-dismissible fade show" role="alert">
@@ -119,6 +92,8 @@
                                     </div>
                                     <button type="submit" class="btn btn-primary btn-lg mt-auto">Upload Index
                                         Files</button>
+
+
                                 </form>
                             </div>
                         </div>
@@ -146,6 +121,8 @@
                                     </div>
                                     <button type="submit" class="btn btn-success btn-lg mt-auto">Upload Option
                                         Files</button>
+
+
                                 </form>
                             </div>
                         </div>
@@ -166,17 +143,51 @@
 
     <!-- Footer with Developer Credit -->
     <footer class="text-center">
-        <p id="sg" class="mb-0">Developed by Saksham Gupta</p>
+        <p class="mb-0">Developed by Saksham Gupta</p>
     </footer>
+
+
+
+    <!-- ... rest of content ... -->
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         document.querySelectorAll('form').forEach(form => {
-            form.addEventListener('submit', function () {
-                document.getElementById('loadingOverlay').style.display = 'flex';
+            form.addEventListener('submit', async function (e) {
+                e.preventDefault();
+
+                const submitBtn = this.querySelector('button[type="submit"]');
+                const originalBtnText = submitBtn.innerHTML;
+
+                // UI Loading State
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Uploading...';
+
+                // Generate ID (optional, but keeps backend logic happy if needed)
+                const taskId = 'task_' + Math.random().toString(36).substr(2, 9);
+                const formData = new FormData(this);
+                formData.append('task_id', taskId);
+
+                try {
+                    const response = await fetch(this.action, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const html = await response.text();
+                    document.open();
+                    document.write(html);
+                    document.close();
+
+                } catch (error) {
+                    alert('Upload failed: ' + error);
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = originalBtnText;
+                }
             });
         });
     </script>
+
 </body>
 
 </html>
