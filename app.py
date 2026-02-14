@@ -80,8 +80,23 @@ except Exception as e:
         '***:***'
     ) if '@' in APP_CONFIG['DATABASE_URL'] else APP_CONFIG['DATABASE_URL']
     
+    # Enhanced error diagnosis for Cloud Run
     print(f"❌ Failed to connect to database at: {safe_url}", file=sys.stderr)
-    print("If running in Cloud Run, ensure the database is accessible (e.g. via Cloud SQL Auth Proxy sidecar if using localhost).", file=sys.stderr)
+    
+    if 'unix_socket' in APP_CONFIG['DATABASE_URL']:
+        import os
+        socket_path = APP_CONFIG['DATABASE_URL'].split('unix_socket=')[1].split('&')[0]
+        if not os.path.exists(socket_path):
+            print("\n" + "!" * 80, file=sys.stderr)
+            print("❌ CLOUD SQL SOCKET FILE MISSING!", file=sys.stderr)
+            print(f"   The socket file '{socket_path}' does not exist.", file=sys.stderr)
+            print("   You MUST add the Cloud SQL connection in the Cloud Run console:", file=sys.stderr)
+            print("   1. Go to 'Edit & Deploy New Revision'", file=sys.stderr)
+            print("   2. Scroll to 'Cloud SQL connections'", file=sys.stderr)
+            print("   3. Click 'Add Connection' and select your instance", file=sys.stderr)
+            print("!" * 80 + "\n", file=sys.stderr)
+            
+    print("If running in Cloud Run, ensure the Cloud SQL connection is added in the 'Cloud SQL connections' section.", file=sys.stderr)
     
     # Create engine anyway to prevent import errors (queries will fail gracefully)
     if not engine:
