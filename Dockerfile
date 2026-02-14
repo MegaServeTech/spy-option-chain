@@ -29,4 +29,4 @@ COPY . .
 EXPOSE 8080
 
 # Run the application with gunicorn on PORT from environment (Cloud Run sets this to 8080)
-CMD exec gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 4 --timeout 120 app:app
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 4 --timeout 120 app:app

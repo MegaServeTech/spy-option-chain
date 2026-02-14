@@ -5,15 +5,32 @@ from dotenv import load_dotenv
 # Load .env variables
 load_dotenv()
 
-# Use the specific connection string provided by the user
-# Updated database name from 'mst' to 'spydata' as requested
-# This Unix Socket connection string is specifically for Cloud Run
-DEFAULT_URL = "mysql+pymysql://msdb:dbMega$3322@/spydata?unix_socket=/cloudsql/market-ana:asia-south1:msdb"
+# Auto-detect environment
+IS_CLOUD_RUN = os.getenv('K_SERVICE') is not None
 
-# Use environment variable if set, otherwise use the default provided string
+# Default settings based on environment
+if IS_CLOUD_RUN:
+    # Production (Cloud Run): Use Cloud SQL Unix Socket
+    # If DATABASE_URL is somehow missing or incomplete, this default ensures it works
+    DEFAULT_URL = "mysql+pymysql://msdb:dbMega$3322@/spydata?unix_socket=/cloudsql/market-ana:asia-south1:msdb"
+else:
+    # Local Development: Use TCP localhost
+    # Connects to your local Docker container or local MySQL instance
+    DEFAULT_URL = "mysql+pymysql://msdb:dbMega$3322@127.0.0.1:3307/spydata"
+
+# Get from env or use default
 database_url = os.getenv('DATABASE_URL', DEFAULT_URL)
 
-# Validate required environment variable
+# FAILSAFE: If running in Cloud Run but URL looks like localhost (often happens by mistake), force the correct Cloud SQL path
+if IS_CLOUD_RUN and ('127.0.0.1' in database_url or 'localhost' in database_url):
+    print("⚠️  Correcting invalid localhost URL for Cloud Run...")
+    database_url = "mysql+pymysql://msdb:dbMega$3322@/spydata?unix_socket=/cloudsql/market-ana:asia-south1:msdb"
+elif IS_CLOUD_RUN and 'unix_socket' not in database_url:
+     # Even if not localhost, ensure socket is present if it looks like a standard mysql URL
+     if '@/' in database_url and 'cloudsql' not in database_url:
+          database_url += "?unix_socket=/cloudsql/market-ana:asia-south1:msdb"
+
+# Validate
 if not database_url:
     raise ValueError("Missing required environment variable: DATABASE_URL")
 
