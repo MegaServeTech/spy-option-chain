@@ -47,9 +47,9 @@ if IS_CLOUD_RUN and not DATABASE_URL:
     ╚════════════════════════════════════════════════════════════════╝
     """
     print(error_msg, file=sys.stderr)
-    # Use a dummy URL to allow app to start (will fail on first DB query)
-    DATABASE_URL = "mysql+pymysql://dummy:dummy@localhost:3306/dummy"
-    print("⚠️  Using dummy DATABASE_URL - app will fail on first database query!", file=sys.stderr)
+    # Use the user-provided fallback URL
+    DATABASE_URL = "mysql+pymysql://msdb:dbMega$3322@127.0.0.1:3307/spydata"
+    print(f"⚠️  DATABASE_URL not set. Using hardcoded fallback: {DATABASE_URL}", file=sys.stderr)
 
 elif not DATABASE_URL:
     # Local development: Build from individual environment variables or use defaults
