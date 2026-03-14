@@ -388,6 +388,7 @@ def options_chain():
     atm_straddle_chart = None
     straddle_comparison_chart = None
     slider_value = 0
+    open_price = None
 
     if not selected_date or selected_date not in available_dates:
         chain_html = "<p class='text-danger'>Invalid or no date selected.</p>"
