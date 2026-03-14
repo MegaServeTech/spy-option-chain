@@ -294,6 +294,9 @@ def view_data():
         if current_inspector and current_inspector.has_table('index_data'):
             df = pd.read_sql('SELECT * FROM index_data ORDER BY id DESC LIMIT 10', engine)
             if not df.empty:
+                if 'id' in df.columns:
+                    df = df.drop(columns=['id'])
+                df.columns = [c.upper() for c in df.columns]
                 index_table = df.to_html(classes='table table-striped table-bordered', index=False)
     except Exception:
         index_table = '<p>Error reading preview</p>'
@@ -302,6 +305,9 @@ def view_data():
         if current_inspector and current_inspector.has_table('option_data'):
             df = pd.read_sql('SELECT * FROM option_data ORDER BY id DESC LIMIT 10', engine)
             if not df.empty:
+                if 'id' in df.columns:
+                    df = df.drop(columns=['id'])
+                df.columns = [c.upper() for c in df.columns]
                 option_table = df.to_html(classes='table table-striped table-bordered', index=False)
     except Exception:
         option_table = '<p>Error reading preview</p>'
@@ -633,200 +639,222 @@ def options_chain():
 
     # ── Charts ───────────────────────────────────────────────────────
     try:
-        price_df = index_df.copy()
-        # Changed format to match DB YYYY-MM-DD
-        price_df['dt'] = pd.to_datetime(price_df['datetime_UTC'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
-        if price_df['dt'].isna().all():
-             # Fallback if format is different (e.g. no seconds or T separator)
-             price_df['dt'] = pd.to_datetime(price_df['datetime_UTC'], errors='coerce')
-             
-        price_df = price_df.dropna(subset=['dt']).sort_values('dt')
+        print(f"DEBUG: Starting chart generation for {selected_date}")
+        if index_df.empty:
+            print("DEBUG: index_df is empty, skipping charts")
+        else:
+            price_df = index_df.copy()
+            # Normalize timestamps for matching: YYYY-MM-DD HH:MM
+            price_df['dt'] = pd.to_datetime(price_df['datetime_UTC'], errors='coerce')
+            price_df = price_df.dropna(subset=['dt']).sort_values('dt')
+            price_df['match_time'] = price_df['dt'].dt.strftime('%Y-%m-%d %H:%M')
 
-        session_mask = (
-            (price_df['dt'].dt.time >= pd.to_datetime('13:30').time()) &
-            (price_df['dt'].dt.time <= pd.to_datetime('20:15').time())
-        )
-        filtered_df = price_df[session_mask]
-
-        times = filtered_df['dt'].dt.strftime('%H:%M').tolist()
-        prices = filtered_df['open'].astype(float).tolist()
-
-        # Price chart
-        fig_price = go.Figure()
-        fig_price.add_trace(go.Scatter(
-            x=times, y=prices,
-            mode='lines',
-            line=dict(color='#0066ff', width=3, shape='spline', smoothing=1.3),
-            name='SPY Price'
-        ))
-        fig_price.update_layout(
-            title=f"SPY Price – {trading_date_obj.strftime('%d %b %Y')} (13:30–20:15 UTC)",
-            xaxis_title="Time (UTC)", yaxis_title="Price ($)",
-            template="simple_white", height=600, hovermode="x unified"
-        )
-        fig_price.update_xaxes(tickmode='array',
-                              tickvals=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00'],
-                              ticktext=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00'])
-        price_chart = json.dumps(fig_price, cls=PlotlyJSONEncoder)
-
-        # Straddle charts
-        if not filtered_df.empty:
-            opt_df = pd.read_sql(
-                text("""
-                    SELECT UTC_MINUTE, STRIKE, OPTION_TYPE, bid_open, ask_open, EXPIRY_DATE
-                    FROM option_data
-                    WHERE UTC_MINUTE LIKE :day_prefix
-                """),
-                engine, params={"day_prefix": f"{utc_minute_date} %"}
+            session_mask = (
+                (price_df['dt'].dt.time >= pd.to_datetime('13:30').time()) &
+                (price_df['dt'].dt.time <= pd.to_datetime('20:15').time())
             )
+            filtered_df = price_df[session_mask]
 
-            if not opt_df.empty:
-                opt_df['STRIKE'] = pd.to_numeric(opt_df['STRIKE'], errors='coerce')
-                opt_df['bid_open'] = pd.to_numeric(opt_df['bid_open'], errors='coerce')
-                opt_df['ask_open'] = pd.to_numeric(opt_df['ask_open'], errors='coerce')
-                opt_df = opt_df.dropna(subset=['STRIKE', 'bid_open', 'ask_open', 'EXPIRY_DATE'])
+            if filtered_df.empty:
+                print("DEBUG: filtered_df (13:30-20:15) is empty")
+            else:
+                times = filtered_df['dt'].dt.strftime('%H:%M').tolist()
+                prices = filtered_df['open'].astype(float).tolist()
 
-                opt_by_time = opt_df.groupby('UTC_MINUTE')
-
-                dte_list = [
-                    ('0DTE', trading_date_obj),
-                    ('1DTE', trading_date_obj + timedelta(days=1)),
-                    ('2DTE', trading_date_obj + timedelta(days=2))
-                ]
-
-                color_list = ["#ea170c", "#2e21e0", "#2edb2e"]
-
-                # ATM Straddle Chart
-                fig_straddle = go.Figure()
-                all_straddle_data = {}
-
-                for i, (dte_label, exp_date) in enumerate(dte_list):
-                    exp_str = exp_date.strftime("%Y-%m-%d")
-                    straddle_prices = []
-                    used_strikes = []
-
-                    for _, row in filtered_df.iterrows():
-                        underlying = float(row['open'])
-                        utc_time = row['datetime_UTC']
-
-                        if utc_time not in opt_by_time.groups:
-                            straddle_prices.append(np.nan)
-                            used_strikes.append(None)
-                            continue
-
-                        time_group = opt_by_time.get_group(utc_time)
-                        exp_group = time_group[time_group['EXPIRY_DATE'] == exp_str]
-
-                        if exp_group.empty:
-                            straddle_prices.append(np.nan)
-                            used_strikes.append(None)
-                            continue
-
-                        avail_strikes = exp_group['STRIKE'].unique()
-                        if len(avail_strikes) == 0:
-                            straddle_prices.append(np.nan)
-                            used_strikes.append(None)
-                            continue
-
-                        closest = avail_strikes[np.argmin(np.abs(avail_strikes - underlying))]
-                        strike_data = exp_group[exp_group['STRIKE'] == closest]
-
-                        call = strike_data[strike_data['OPTION_TYPE'] == 'C']
-                        put = strike_data[strike_data['OPTION_TYPE'] == 'P']
-
-                        if not call.empty and not put.empty:
-                            mid_call = (call.iloc[0]['bid_open'] + call.iloc[0]['ask_open']) / 2
-                            mid_put = (put.iloc[0]['bid_open'] + put.iloc[0]['ask_open']) / 2
-                            straddle_prices.append(mid_call + mid_put)
-                            used_strikes.append(closest)
-                        else:
-                            straddle_prices.append(np.nan)
-                            used_strikes.append(closest)
-
-                    all_straddle_data[dte_label] = (straddle_prices, used_strikes)
-
-                    fig_straddle.add_trace(go.Scatter(
-                        x=times,
-                        y=straddle_prices,
+                # Price chart
+                try:
+                    fig_price = go.Figure()
+                    fig_price.add_trace(go.Scatter(
+                        x=times, y=prices,
                         mode='lines',
-                        line=dict(color=color_list[i], width=3, shape='spline', smoothing=1.3),
-                        name=f'{dte_label} ATM Premium',
-                        visible=(dte_label == selected_expiry),
-                        hovertemplate=(
-                            '<b>Time:</b> %{x}<br>'
-                            '<b>Premium:</b> $%{y:.2f}<br>'
-                            '<b>Underlying:</b> $%{customdata[0]:.2f}<br>'
-                            '<b>Strike:</b> %{customdata[1]}<extra></extra>'
-                        ),
-                        customdata=list(zip(prices, used_strikes))
+                        line=dict(color='#0066ff', width=2, shape='spline', smoothing=1.3),
+                        name='SPY Price'
                     ))
+                    fig_price.update_layout(
+                        title=f"SPY Price – {trading_date_obj.strftime('%d %b %Y')} (13:30–20:15 UTC)",
+                        xaxis_title="Time (UTC)", yaxis_title="Price ($)",
+                        template="simple_white", height=600, hovermode="x unified"
+                    )
+                    fig_price.update_xaxes(tickmode='array',
+                                          tickvals=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00'],
+                                          ticktext=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00'])
+                    price_chart = json.dumps(fig_price, cls=PlotlyJSONEncoder)
+                except Exception as e:
+                    print(f"ERROR: Price chart failed: {e}")
 
-                fig_straddle.update_layout(
-                    title=f"ATM Premium – {trading_date_obj.strftime('%d %b %Y')}",
-                    xaxis_title="Time (UTC)", yaxis_title="Price ($)",
-                    template="simple_white", height=650,
-                    hovermode="x unified", showlegend=True,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                fig_straddle.update_xaxes(
-                    tickmode='array',
-                    tickvals=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00'],
-                    ticktext=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00']
-                )
-                atm_straddle_chart = json.dumps(fig_straddle, cls=PlotlyJSONEncoder)
+                # Straddle charts
+                try:
+                    opt_df = pd.read_sql(
+                        text("""
+                            SELECT UTC_MINUTE, STRIKE, OPTION_TYPE, bid_open, ask_open, EXPIRY_DATE
+                            FROM option_data
+                            WHERE UTC_MINUTE LIKE :day_prefix
+                        """),
+                        engine, params={"day_prefix": f"{utc_minute_date}%"}
+                    )
 
-                # Straddle Comparison Chart
-                fig_compare = go.Figure()
-                colors_compare = ["#d83813", "#1934cd", "#52ff33"]
-                dte_options = ['0DTE', '1DTE', '2DTE']
+                    if opt_df.empty:
+                        print(f"DEBUG: No option data found for {utc_minute_date}")
+                    else:
+                        opt_df['STRIKE'] = pd.to_numeric(opt_df['STRIKE'], errors='coerce')
+                        opt_df['bid_open'] = pd.to_numeric(opt_df['bid_open'], errors='coerce')
+                        opt_df['ask_open'] = pd.to_numeric(opt_df['ask_open'], errors='coerce')
+                        opt_df = opt_df.dropna(subset=['STRIKE', 'bid_open', 'ask_open', 'EXPIRY_DATE'])
+                        
+                        # Normalize timestamps for matching: YYYY-MM-DD HH:MM
+                        opt_df['dt'] = pd.to_datetime(opt_df['UTC_MINUTE'], errors='coerce')
+                        opt_df['match_time'] = opt_df['dt'].dt.strftime('%Y-%m-%d %H:%M')
+                        opt_df = opt_df.drop(columns=['dt']) # clean up
 
-                if selected_comparison == '0v1':
-                    show_dtes = ['0DTE', '1DTE']
-                    title_suffix = "0DTE vs 1DTE"
-                elif selected_comparison == '0v2':
-                    show_dtes = ['0DTE', '2DTE']
-                    title_suffix = "0DTE vs 2DTE"
-                elif selected_comparison == '1v2':
-                    show_dtes = ['1DTE', '2DTE']
-                    title_suffix = "1DTE vs 2DTE"
-                else:
-                    show_dtes = ['0DTE', '1DTE', '2DTE']
-                    title_suffix = "0DTE vs 1DTE vs 2DTE"
+                        opt_by_time = opt_df.groupby('match_time')
 
-                for i, label in enumerate(dte_options):
-                    if label in show_dtes and label in all_straddle_data:
-                        straddle_prices, used_strikes = all_straddle_data[label]
-                        fig_compare.add_trace(go.Scatter(
-                            x=times,
-                            y=straddle_prices,
-                            mode='lines',
-                            line=dict(color=colors_compare[i], width=4, shape='spline', smoothing=1.3),
-                            name=f'{label} ATM Premium',
-                            hovertemplate=(
-                                '<b>Time:</b> %{x}<br>'
-                                '<b>Price:</b> $%{y:.2f}<br>'
-                                '<b>Underlying:</b> $%{customdata[0]:.2f}<br>'
-                                '<b>Strike:</b> %{customdata[1]}<extra></extra>'
-                            ),
-                            customdata=list(zip(prices, used_strikes))
-                        ))
+                        dte_list = [
+                            ('0DTE', trading_date_obj),
+                            ('1DTE', trading_date_obj + timedelta(days=1)),
+                            ('2DTE', trading_date_obj + timedelta(days=2))
+                        ]
 
-                fig_compare.update_layout(
-                    title=f"ATM Premium Comparison ({title_suffix}) – {trading_date_obj.strftime('%d %b %Y')}",
-                    xaxis_title="Time (UTC)", yaxis_title="Premium ($)",
-                    template="simple_white", height=680,
-                    hovermode="x unified", showlegend=True,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                fig_compare.update_xaxes(
-                    tickmode='array',
-                    tickvals=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00'],
-                    ticktext=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00']
-                )
-                straddle_comparison_chart = json.dumps(fig_compare, cls=PlotlyJSONEncoder)
+                        color_list = ["#ea170c", "#2e21e0", "#2edb2e"]
+                        fig_straddle = go.Figure()
+                        all_straddle_data = {}
 
-    except Exception:
-        price_chart = atm_straddle_chart = straddle_comparison_chart = None
+                        for i, (dte_label, exp_date) in enumerate(dte_list):
+                            exp_str = exp_date.strftime("%Y-%m-%d")
+                            straddle_prices = []
+                            used_strikes = []
+
+                            for _, row in filtered_df.iterrows():
+                                underlying = float(row['open']) if pd.notna(row['open']) else 0
+                                match_time = row['match_time']
+
+                                if match_time not in opt_by_time.groups:
+                                    straddle_prices.append(np.nan)
+                                    used_strikes.append(None)
+                                    continue
+
+                                time_group = opt_by_time.get_group(match_time)
+                                exp_group = time_group[time_group['EXPIRY_DATE'] == exp_str]
+
+                                if exp_group.empty:
+                                    straddle_prices.append(np.nan)
+                                    used_strikes.append(None)
+                                    continue
+
+                                avail_strikes = exp_group['STRIKE'].unique()
+                                if len(avail_strikes) == 0:
+                                    straddle_prices.append(np.nan)
+                                    used_strikes.append(None)
+                                    continue
+
+                                closest = avail_strikes[np.argmin(np.abs(avail_strikes - underlying))]
+                                strike_data = exp_group[exp_group['STRIKE'] == closest]
+
+                                call = strike_data[strike_data['OPTION_TYPE'] == 'C']
+                                put = strike_data[strike_data['OPTION_TYPE'] == 'P']
+
+                                if not call.empty and not put.empty:
+                                    mid_call = (call.iloc[0]['bid_open'] + call.iloc[0]['ask_open']) / 2
+                                    mid_put = (put.iloc[0]['bid_open'] + put.iloc[0]['ask_open']) / 2
+                                    straddle_prices.append(mid_call + mid_put)
+                                    used_strikes.append(closest)
+                                else:
+                                    straddle_prices.append(np.nan)
+                                    used_strikes.append(closest)
+
+                            all_straddle_data[dte_label] = (straddle_prices, used_strikes)
+
+                            fig_straddle.add_trace(go.Scatter(
+                                x=times,
+                                y=straddle_prices,
+                                mode='lines',
+                                line=dict(color=color_list[i], width=2, shape='spline', smoothing=1.3),
+                                name=f'{dte_label} ATM Premium',
+                                visible=(dte_label == selected_expiry),
+                                hovertemplate=(
+                                    '<b>Time:</b> %{x}<br>'
+                                    '<b>Premium:</b> $%{y:.2f}<br>'
+                                    '<b>Underlying:</b> $%{customdata[0]:.2f}<br>'
+                                    '<b>Strike:</b> %{customdata[1]}<extra></extra>'
+                                ),
+                                customdata=list(zip(prices, used_strikes))
+                            ))
+
+                        fig_straddle.update_layout(
+                            title=f"ATM Premium – {trading_date_obj.strftime('%d %b %Y')}",
+                            xaxis_title="Time (UTC)", yaxis_title="Price ($)",
+                            template="simple_white", height=650,
+                            hovermode="x unified", showlegend=True,
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                        )
+                        fig_straddle.update_xaxes(
+                            tickmode='array',
+                            tickvals=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00'],
+                            ticktext=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00']
+                        )
+                        atm_straddle_chart = json.dumps(fig_straddle, cls=PlotlyJSONEncoder)
+
+                        # Straddle Comparison Chart
+                        try:
+                            fig_compare = go.Figure()
+                            colors_compare = ["#d83813", "#1934cd", "#52ff33"]
+                            dte_options = ['0DTE', '1DTE', '2DTE']
+
+                            if selected_comparison == '0v1':
+                                show_dtes = ['0DTE', '1DTE']
+                                title_suffix = "0DTE vs 1DTE"
+                            elif selected_comparison == '0v2':
+                                show_dtes = ['0DTE', '2DTE']
+                                title_suffix = "0DTE vs 2DTE"
+                            elif selected_comparison == '1v2':
+                                show_dtes = ['1DTE', '2DTE']
+                                title_suffix = "1DTE vs 2DTE"
+                            else:
+                                show_dtes = ['0DTE', '1DTE', '2DTE']
+                                title_suffix = "0DTE vs 1DTE vs 2DTE"
+
+                            for i, label in enumerate(dte_options):
+                                if label in show_dtes and label in all_straddle_data:
+                                    s_prices, u_strikes = all_straddle_data[label]
+                                    fig_compare.add_trace(go.Scatter(
+                                        x=times,
+                                        y=s_prices,
+                                        mode='lines',
+                                        line=dict(color=colors_compare[i], width=2, shape='spline', smoothing=1.3),
+                                        name=f'{label} ATM Premium',
+                                        hovertemplate=(
+                                            '<b>Time:</b> %{x}<br>'
+                                            '<b>Price:</b> $%{y:.2f}<br>'
+                                            '<b>Underlying:</b> $%{customdata[0]:.2f}<br>'
+                                            '<b>Strike:</b> %{customdata[1]}<extra></extra>'
+                                        ),
+                                        customdata=list(zip(prices, u_strikes))
+                                    ))
+
+                            fig_compare.update_layout(
+                                title=f"ATM Premium Comparison ({title_suffix}) – {trading_date_obj.strftime('%d %b %Y')}",
+                                xaxis_title="Time (UTC)", yaxis_title="Premium ($)",
+                                template="simple_white", height=680,
+                                hovermode="x unified", showlegend=True,
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                            )
+                            fig_compare.update_xaxes(
+                                tickmode='array',
+                                tickvals=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00'],
+                                ticktext=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00']
+                            )
+                            straddle_comparison_chart = json.dumps(fig_compare, cls=PlotlyJSONEncoder)
+                        except Exception as e:
+                            print(f"ERROR: Comparison chart failed: {e}")
+
+                except Exception as e:
+                    print(f"ERROR: Straddle/Comparison charts failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+    except Exception as e:
+        print(f"ERROR: General chart generation block failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     return render_template(
         'options_chain.html',
