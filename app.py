@@ -644,16 +644,17 @@ def options_chain():
             print("DEBUG: index_df is empty, skipping charts")
         else:
             price_df = index_df.copy()
-            # Normalize timestamps for matching: YYYY-MM-DD HH:MM
+            # Normalize timestamps for matching
             price_df['dt'] = pd.to_datetime(price_df['datetime_UTC'], errors='coerce')
             price_df = price_df.dropna(subset=['dt']).sort_values('dt')
-            price_df['match_time'] = price_df['dt'].dt.strftime('%Y-%m-%d %H:%M')
+            # Floor to minute for robust matching
+            price_df['dt_min'] = price_df['dt'].dt.floor('min')
 
             session_mask = (
                 (price_df['dt'].dt.time >= pd.to_datetime('13:30').time()) &
                 (price_df['dt'].dt.time <= pd.to_datetime('20:15').time())
             )
-            filtered_df = price_df[session_mask]
+            filtered_df = price_df[session_mask].copy()
 
             if filtered_df.empty:
                 print("DEBUG: filtered_df (13:30-20:15) is empty")
@@ -699,41 +700,47 @@ def options_chain():
                         opt_df['STRIKE'] = pd.to_numeric(opt_df['STRIKE'], errors='coerce')
                         opt_df['bid_open'] = pd.to_numeric(opt_df['bid_open'], errors='coerce')
                         opt_df['ask_open'] = pd.to_numeric(opt_df['ask_open'], errors='coerce')
-                        opt_df = opt_df.dropna(subset=['STRIKE', 'bid_open', 'ask_open', 'EXPIRY_DATE'])
                         
-                        # Normalize timestamps for matching: YYYY-MM-DD HH:MM
+                        # Normalize timestamps for matching
                         opt_df['dt'] = pd.to_datetime(opt_df['UTC_MINUTE'], errors='coerce')
-                        opt_df['match_time'] = opt_df['dt'].dt.strftime('%Y-%m-%d %H:%M')
-                        opt_df = opt_df.drop(columns=['dt']) # clean up
-
-                        opt_by_time = opt_df.groupby('match_time')
+                        opt_df['dt_min'] = opt_df['dt'].dt.floor('min')
+                        
+                        # Normalize Expiry Date to Date objects for robust comparison
+                        opt_df['exp_dt'] = pd.to_datetime(opt_df['EXPIRY_DATE'], errors='coerce').dt.date
+                        
+                        opt_df = opt_df.dropna(subset=['STRIKE', 'bid_open', 'ask_open', 'exp_dt'])
+                        
+                        # Group by floored datetime
+                        opt_by_time = {k: v for k, v in opt_df.groupby('dt_min')}
+                        
+                        print(f"DEBUG: Processed {len(opt_df)} option rows. Found {len(opt_by_time)} unique minutes.")
 
                         dte_list = [
-                            ('0DTE', trading_date_obj),
-                            ('1DTE', trading_date_obj + timedelta(days=1)),
-                            ('2DTE', trading_date_obj + timedelta(days=2))
+                            ('0DTE', trading_date_obj.date()),
+                            ('1DTE', (trading_date_obj + timedelta(days=1)).date()),
+                            ('2DTE', (trading_date_obj + timedelta(days=2)).date())
                         ]
 
                         color_list = ["#ea170c", "#2e21e0", "#2edb2e"]
                         fig_straddle = go.Figure()
                         all_straddle_data = {}
 
-                        for i, (dte_label, exp_date) in enumerate(dte_list):
-                            exp_str = exp_date.strftime("%Y-%m-%d")
+                        for i, (dte_label, exp_date_obj) in enumerate(dte_list):
                             straddle_prices = []
                             used_strikes = []
+                            match_count = 0
 
                             for _, row in filtered_df.iterrows():
                                 underlying = float(row['open']) if pd.notna(row['open']) else 0
-                                match_time = row['match_time']
+                                dt_min = row['dt_min']
 
-                                if match_time not in opt_by_time.groups:
+                                if dt_min not in opt_by_time:
                                     straddle_prices.append(np.nan)
                                     used_strikes.append(None)
                                     continue
 
-                                time_group = opt_by_time.get_group(match_time)
-                                exp_group = time_group[time_group['EXPIRY_DATE'] == exp_str]
+                                time_group = opt_by_time[dt_min]
+                                exp_group = time_group[time_group['exp_dt'] == exp_date_obj]
 
                                 if exp_group.empty:
                                     straddle_prices.append(np.nan)

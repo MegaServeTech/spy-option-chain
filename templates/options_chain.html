@@ -265,41 +265,44 @@
     </div>
 
     <!-- Intraday Price Chart -->
-    {% if price_chart %}
     <div class="card p-4 mb-5 bg-dark text-light border-0"
         style="border-radius: 12px; max-width: 1200px; margin: 40px auto;">
         <h3 class="text-center mb-4" style="color: #00ffff;">Intraday SPY Price Movement</h3>
+        {% if price_chart %}
         <div id="price-chart" style="width: 100%; height: 600px;"></div>
         <script>
             var priceChartData = {{ price_chart | safe }};
             Plotly.newPlot('price-chart', priceChartData.data, priceChartData.layout, { responsive: true });
         </script>
+        {% else %}
+        <div class="py-5 text-center">
+            <p class="lead text-muted">
+                <em>No price data matched for <strong>13:30–20:15</strong> on this date.</em>
+            </p>
+            <small class="text-muted text-opacity-75">Check if the Index CSV for this date was uploaded correctly.</small>
+        </div>
+        {% endif %}
     </div>
-    {% else %}
-    <div class="card p-4 mb-5 text-center" style="max-width: 1200px; margin: 40px auto;">
-        <p class="lead text-muted">
-            <em>No price data available between <strong>13:30</strong> and <strong>20:15</strong> on this date.</em>
-        </p>
-        <small class="text-muted">Your uploaded data may be in Eastern Time or only contain pre/post-market
-            hours.</small>
-    </div>
-    {% endif %}
 
     <!-- ATM Straddle Chart -->
-    {% if atm_straddle_chart %}
     <div class="card p-4 mb-5 bg-dark text-light border-0"
         style="border-radius: 12px; max-width: 1200px; margin: 40px auto;">
         <h3 class="text-center mb-4" style="color: #00ffff; font-weight: bold;">ATM Premium</h3>
+        {% if atm_straddle_chart %}
         <div id="atm-straddle-chart" style="width: 100%; height: 650px;"></div>
         <script>
             var fullChartData = {{ atm_straddle_chart | safe }};
             Plotly.newPlot('atm-straddle-chart', fullChartData.data, fullChartData.layout, { responsive: true });
         </script>
+        {% else %}
+        <div class="py-5 text-center">
+            <p class="lead text-muted"><em>ATM Premium data not available for this session.</em></p>
+            <small class="text-muted text-opacity-75">Ensure Option data matches the trading session times and normalized expiry dates.</small>
+        </div>
+        {% endif %}
     </div>
-    {% endif %}
 
     <!-- Straddle Comparison Chart -->
-    {% if straddle_comparison_chart %}
     <div class="card p-4 mb-5"
         style="background: linear-gradient(135deg, #1a2a6c, #b21f1f, #fdbb2d); border-radius: 16px; color: white; max-width: 1200px; margin: 40px auto;">
         <div class="text-center mb-4">
@@ -318,6 +321,7 @@
                 </select>
             </div>
         </div>
+        {% if straddle_comparison_chart %}
         <div id="straddle-comparison-chart" style="width: 100%; height: 680px;"></div>
         <script>
             var comparisonData = {{ straddle_comparison_chart | safe }};
@@ -327,8 +331,13 @@
                 displaylogo: false
             });
         </script>
+        {% else %}
+        <div class="py-5 text-center">
+            <p class="lead">Comparison data could not be generated.</p>
+            <small class="opacity-75">Check if all DTE data (0DTE, 1DTE, 2DTE) is available for the selected dates.</small>
+        </div>
+        {% endif %}
     </div>
-    {% endif %}
 
     <div class="text-center mt-5 mb-5">
         <a href="/" class="btn btn-outline-cyan btn-lg px-5 py-3 fw-bold"
@@ -450,4 +459,3 @@
 </body>
 
 </html>
-```
